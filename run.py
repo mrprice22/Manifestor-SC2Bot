@@ -1,3 +1,7 @@
+import sys
+sys.path.append('ares-sc2/src/ares')
+sys.path.append('ares-sc2/src')
+sys.path.append('ares-sc2')
 import argparse
 import asyncio
 import logging
