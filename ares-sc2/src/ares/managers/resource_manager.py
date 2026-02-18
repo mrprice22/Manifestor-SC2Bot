@@ -651,7 +651,7 @@ class ResourceManager(Manager, IManagerMediator):
 
         """
         sorted_minerals: list[Unit] = cy_sorted_by_distance_to(
-            minerals, self.ai.start_location
+            minerals, self.ai.start_location or (0.0, 0.0)
         )
         assigned_workers: set[int] = set()
         for i, mineral in enumerate(reversed(sorted_minerals)):
