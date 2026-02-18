@@ -1,7 +1,7 @@
 # ===== BOT SETTINGS =====
 # Your bot's name and race (use plain strings)
-BOT_NAME = "MyBot"
-BOT_RACE = "Terran"  # Options: Terran, Protoss, Zerg, Random
+BOT_NAME = "James' Noob Bot"
+BOT_RACE = "Zerg"  # Options: Terran, Protoss, Zerg, Random
 
 # ===== GAME SETTINGS =====
 # Maps configuration
@@ -15,15 +15,15 @@ MAP_PATH = "C:/Program Files (x86)/StarCraft II/Maps"  # Default Windows path - 
 
 # List of maps to play on (randomly selected if not specified)
 MAP_POOL = [
-    "Simple128",
-    "Simple96",
-    "Simple64"
+    "PersephoneAIE_v4",
+    "PylonAIE_v4",
+    "TorchesAIE_v4"
 ]
 
 # ===== OPPONENT SETTINGS =====
 # Computer opponent settings (for local games)
-OPPONENT_RACE = "Random"  # Terran, Zerg, Protoss, Random
-OPPONENT_DIFFICULTY = "Medium"  # VeryEasy, Easy, Medium, Hard, VeryHard, etc.
+OPPONENT_RACE = "Zerg"  # Terran, Zerg, Protoss, Random
+OPPONENT_DIFFICULTY = "VeryHard"  # VeryEasy, Easy, Medium, Hard, VeryHard, etc.
 
 # ===== GAME MODE =====
 # Set to True to play in realtime (like a human), False for faster simulation
