@@ -83,13 +83,17 @@ class HeuristicManager:
         self._update_army_heuristics()
         self._update_meta_heuristics()
         self._update_aggression_dial()
+        # After heuristics are calculated, layer in counter-play modifiers
+        ctx = self.bot.scout_ledger.get_counter_context(self.bot.state.game_loop)
+        # Modify the aggression dial based on counter prescriptions
+        self.current_state.aggression_dial += ctx.engage_bias_mod * 10  # dial is 0-100
+        self.current_state.aggression_dial = max(0, min(100, self.current_state.aggression_dial))
         
     def get_state(self) -> HeuristicState:
         """Get the current heuristic snapshot"""
         return self.current_state
         
-    # ========== Combat Heuristics ==========
-    
+    # ========== Combat Heuristics ==========    
     def _update_combat_heuristics(self) -> None:
         """Calculate momentum, initiative, threat, tempo, cohesion"""
         self._update_momentum()

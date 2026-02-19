@@ -14,62 +14,61 @@ from sc2.player import Bot, Computer
 from sc2.main import run_game
 from sc2.data import Race, Difficulty, AIBuild
 from ManifestorBot.manifestor_bot import ManifestorBot
+from ManifestorBot.logger import get_logger
 from config import BOT_NAME, BOT_RACE, MAP_POOL, MAP_PATH, OPPONENT_RACE, OPPONENT_DIFFICULTY, REALTIME
+
+log = get_logger()
 
 
 def main():
     """Run a single game for testing"""
-    
-    print("=" * 50)
-    print(f"{BOT_NAME} ({BOT_RACE})")
-    print("=" * 50)
+
+    log.info("=" * 50)
+    log.info("%s (%s)", BOT_NAME, BOT_RACE)
+    log.info("=" * 50)
     
     # Convert string race to enum
     try:
         bot_race = Race[BOT_RACE.capitalize()]
     except KeyError:
-        print(f"Invalid bot race: {BOT_RACE}. Using Zerg.")
+        log.warning("Invalid bot race: %s. Using Zerg.", BOT_RACE)
         bot_race = Race.Zerg
         
     try:
         opponent_race = Race[OPPONENT_RACE.capitalize()]
     except KeyError:
-        print(f"Invalid opponent race: {OPPONENT_RACE}. Using Zerg.")
+        log.warning("Invalid opponent race: %s. Using Zerg.", OPPONENT_RACE)
         opponent_race = Race.Zerg
         
     try:
         difficulty = Difficulty[OPPONENT_DIFFICULTY]
     except KeyError:
-        print(f"Invalid difficulty: {OPPONENT_DIFFICULTY}. Using Hard.")
+        log.warning("Invalid difficulty: %s. Using Hard.", OPPONENT_DIFFICULTY)
         difficulty = Difficulty.Hard
     
     # Select random map
     map_name = random.choice(MAP_POOL)
-    print(f"Map: {map_name}")
-    print(f"Opponent: {OPPONENT_RACE} {OPPONENT_DIFFICULTY} Rush")
-    print(f"Realtime: {REALTIME}")
-    print()
+    log.info("Map: %s", map_name)
+    log.info("Opponent: %s %s", OPPONENT_RACE, OPPONENT_DIFFICULTY)
+    log.info("Realtime: %s", REALTIME)
     
     # Load map
     if MAP_PATH and os.path.exists(MAP_PATH):
         try:
-            print(f"Loading map from: {MAP_PATH}")
+            log.info("Loading map from: %s", MAP_PATH)
             map_file = Path(MAP_PATH) / f"{map_name}.SC2Map"
             if map_file.exists():
                 map_obj = maps.Map(map_file)
             else:
-                print(f"Map not found: {map_file}")
-                print("Falling back to default SC2 maps...")
+                log.warning("Map not found: %s — falling back to default SC2 maps", map_file)
                 map_obj = maps.get(map_name)
         except Exception as e:
-            print(f"Error loading custom map: {e}")
-            print("Falling back to default SC2 maps...")
+            log.error("Error loading custom map: %s — falling back to default SC2 maps", e)
             map_obj = maps.get(map_name)
     else:
         map_obj = maps.get(map_name)
     
-    # Run the game
-    print(f"\nStarting game on {map_name}...\n")
+    log.info("Starting game on %s ...", map_name)
     run_game(
         map_obj,
         [
@@ -80,15 +79,13 @@ def main():
         save_replay_as="manifestor_test.SC2Replay"
     )
     
-    print("\nGame finished!")
+    log.info("Game finished!")
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\nGame stopped by user")
+        log.info("Game stopped by user")
     except Exception as e:
-        print(f"\nAn error occurred: {e}")
-        import traceback
-        traceback.print_exc()
+        log.exception("Unexpected error in main: %s", e)

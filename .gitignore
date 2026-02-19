@@ -1,8 +1,10 @@
 # Publish folder
 publish/
 
+# SC2 Replay Files
+*.SC2Replay
 
-# Repo dump of git directory tree/files
+# Repo dump file
 RepoDump.md
 
 # Byte-compiled / optimized / DLL files
