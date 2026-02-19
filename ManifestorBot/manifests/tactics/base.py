@@ -98,6 +98,32 @@ class TacticModule(ABC):
         return frozenset()
 
     # ---------------------------------------------------------------- #
+    # Optional group tactic interface
+    # ---------------------------------------------------------------- #
+
+    # Set to True in subclasses that require group consolidation before execution.
+    is_group_tactic: bool = False
+
+    def group_commentary(
+        self,
+        posse: list,          # list[Unit]
+        target: object,       # Unit | Point2 | None
+        bot: 'ManifestorBot',
+    ) -> Optional[str]:
+        """
+        Return a chat string to announce this group execution, or None for silence.
+
+        Called by the loop after a successful group consolidation. Override in
+        group tactics that want meaningful commentary. The default is silent so
+        that future group tactics don't accidentally inherit a wrong message.
+
+        Example override in CitizensArrestTactic:
+            def group_commentary(self, posse, target, bot):
+                return f"CITIZEN'S ARREST: {len(posse)} workers mob {target.type_id.name}"
+        """
+        return None
+
+    # ---------------------------------------------------------------- #
     # Required interface
     # ---------------------------------------------------------------- #
 

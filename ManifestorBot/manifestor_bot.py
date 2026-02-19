@@ -119,44 +119,152 @@ class ManifestorBot(AresBot):
         """
         Each unit generates tactic ideas and decides whether to suppress or act.
         This is the core of the two-speed cognitive loop.
+
+        The loop runs in two phases:
+
+        Phase 1 — Idea collection
+            Every eligible unit runs its tactic library and selects its best
+            passing idea. Ideas are collected into a pending list rather than
+            executed immediately. Group tactics (is_group_tactic=True) are
+            separated into their own bucket for special handling.
+
+        Phase 2 — Consolidation and execution
+            Group ideas are consolidated: if enough units share the same group
+            tactic targeting the same enemy, one coordinated group command is
+            issued via give_same_action and all participants get a cooldown stamp.
+            If the group is too small, all ideas in that group are dropped.
+            Individual ideas are executed one-by-one as before.
         """
         # Only generate ideas every ~10 frames, not every frame
         if self.state.game_loop % 10 != 0:
             return
-            
+
+        # Build the full candidate pool: army units + workers.
+        # Workers are excluded from get_own_army_dict but CitizensArrest
+        # needs to evaluate them — so we include them explicitly here.
+        all_candidate_units: List[Unit] = []
+
         army_units = self.mediator.get_own_army_dict
-        
         for unit_type, units in army_units.items():
             for unit in units:
-                # Skip units with explicit roles that shouldn't be interrupted
                 unit_role = self._get_unit_role(unit.tag)
                 if unit_role in {UnitRole.BUILDING, UnitRole.GATHERING}:
                     continue
-                    
-                # Generate ideas from all applicable tactics
-                ideas = self._generate_ideas_for_unit(unit)
-                
-                if not ideas:
-                    continue
-                    
-                # Sort by confidence
-                ideas.sort(key=lambda x: x.confidence, reverse=True)
-                best_idea = ideas[0]
-                
-                # Action suppression logic
-                if self._should_suppress_idea(unit, best_idea):
-                    # Record that this unit thought about acting this frame.
-                    # This is NOT the action cooldown — it just prevents the
-                    # unit from hammering _should_suppress_idea 6× per second.
-                    # The action cooldown is recorded below after execution.
-                    continue
+                all_candidate_units.append(unit)
 
-                # Idea passed suppression — execute it and start the cooldown.
-                # New units are not in suppressed_ideas yet, so they act on
-                # their very first idea. After that the cooldown applies.
-                await self._execute_idea(unit, best_idea)
+        for worker in self.workers:
+            unit_role = self._get_unit_role(worker.tag)
+            if unit_role in {UnitRole.BUILDING}:
+                continue
+            all_candidate_units.append(worker)
+
+        # ------------------------------------------------------------------ #
+        # Phase 1: collect all passing ideas
+        # ------------------------------------------------------------------ #
+        # pending_individual: ready for direct one-by-one execution
+        # pending_group: tactic_name -> [(unit, idea)] for group consolidation
+        pending_individual: List[tuple] = []
+        pending_group: Dict[str, List[tuple]] = {}
+
+        for unit in all_candidate_units:
+            ideas = self._generate_ideas_for_unit(unit)
+            if not ideas:
+                continue
+
+            ideas.sort(key=lambda x: x.confidence, reverse=True)
+            best_idea = ideas[0]
+
+            if self._should_suppress_idea(unit, best_idea):
+                continue
+
+            tactic = best_idea.tactic_module
+            if getattr(tactic, 'is_group_tactic', False):
+                bucket = pending_group.setdefault(tactic.name, [])
+                bucket.append((unit, best_idea))
+            else:
+                pending_individual.append((unit, best_idea))
+
+        # ------------------------------------------------------------------ #
+        # Phase 2a: group consolidation
+        # ------------------------------------------------------------------ #
+        await self._execute_group_ideas(pending_group)
+
+        # ------------------------------------------------------------------ #
+        # Phase 2b: individual execution (unchanged from original behaviour)
+        # ------------------------------------------------------------------ #
+        for unit, idea in pending_individual:
+            await self._execute_idea(unit, idea)
+            self.suppressed_ideas[unit.tag] = self.state.game_loop
+
+    async def _execute_group_ideas(
+        self, pending_group: Dict[str, List[tuple]]
+    ) -> None:
+        """
+        Execute group tactics — or drop them if the group is too small.
+
+        For each group tactic bucket:
+          - Check the minimum posse size declared by the tactic module.
+          - If met: issue one give_same_action for all participants and stamp
+            every participant's cooldown.
+          - If not met: drop all ideas silently. No lone worker suicide-charges.
+
+        Currently handles CitizensArrest. New group tactics slot in here
+        automatically as long as they set is_group_tactic = True and optionally
+        declare a MIN_POSSE_SIZE class attribute.
+        """
+        from sc2.ids.ability_id import AbilityId as _AbilityId
+
+        for tactic_name, unit_idea_pairs in pending_group.items():
+            if not unit_idea_pairs:
+                continue
+
+            tactic_module = unit_idea_pairs[0][1].tactic_module
+            min_size = getattr(tactic_module, 'MIN_POSSE_SIZE', 2)
+
+            if len(unit_idea_pairs) < min_size:
+                # Posse too small — don't execute, don't stamp cooldown.
+                # Workers go back to mining as if nothing happened.
+                continue
+
+            # All ideas in this bucket share the same tactic. Grab the target
+            # from the highest-confidence idea.
+            unit_idea_pairs.sort(key=lambda x: x[1].confidence, reverse=True)
+            best_target = unit_idea_pairs[0][1].target
+
+            if best_target is None or best_target not in self.enemy_units:
+                continue  # Target evaporated between idea generation and now
+
+            # Issue one coordinated attack command for the whole posse
+            posse_units = [u for u, _ in unit_idea_pairs]
+            posse_tags = {u.tag for u in posse_units}
+            self.give_same_action(_AbilityId.ATTACK, posse_tags, best_target)
+
+            # Stamp cooldown on every participant
+            for unit, _ in unit_idea_pairs:
                 self.suppressed_ideas[unit.tag] = self.state.game_loop
-                
+
+            if self.commentary_enabled:
+                msg = tactic_module.group_commentary(posse_units, best_target, self)
+                if msg:
+                    await self._chat(msg)
+      
+    async def _strategy_commentary(self) -> None:
+        """Periodic status updates to help understand what the bot is thinking"""
+        if not self.commentary_enabled:
+            return
+            
+        h = self.heuristic_manager.get_state()
+        
+        # Build a concise status string
+        status_parts = [
+            f"[{self.current_strategy.value}]",
+            f"Mom:{h.momentum:.1f}",
+            f"ArmyVal:{h.army_value_ratio:.2f}",
+            f"Agg:{h.aggression_dial:.0f}",
+        ]
+        
+        await self._chat(" | ".join(status_parts))
+
     def _generate_ideas_for_unit(self, unit: Unit) -> List[TacticIdea]:
         """
         Cycle through all applicable tactics and let each one generate an idea

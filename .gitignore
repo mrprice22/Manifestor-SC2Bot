@@ -1,6 +1,10 @@
 # Publish folder
 publish/
 
+
+# Repo dump of git directory tree/files
+RepoDump.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
