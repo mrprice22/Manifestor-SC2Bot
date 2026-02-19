@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from ManifestorBot.manifestor_bot import ManifestorBot
     from ManifestorBot.manifests.heuristics import HeuristicState
     from ManifestorBot.manifests.strategy import Strategy, TacticalProfile
+    from sc2.position import Point2
 
 
 @dataclass
@@ -216,6 +217,60 @@ class TacticModule(ABC):
                 best_unit = enemy
 
         return best_unit
+    def _find_nearest_enemy_army_unit(
+        self,
+        unit: Unit,
+        bot: 'ManifestorBot',
+    ) -> Optional[Unit]:
+        """
+        Find the closest visible enemy combat unit (not a worker or structure).
+
+        This is the standard offensive target selector when we just want to
+        close distance and fight. Use _find_highest_threat_enemy when you
+        want to prioritise by DPS rather than proximity.
+
+        Returns None if no qualifying enemies are visible.
+        """
+        from sc2.ids.unit_typeid import UnitTypeId as _UnitID
+        # Exclude structures (can_attack check would miss some; is_structure is
+        # the clearest filter) and workers.  We keep overlords / overseers out
+        # too because attacking them wastes time in most scenarios.
+        candidates = [
+            e for e in bot.enemy_units
+            if not e.is_structure and not e.is_worker
+            and e.type_id not in {_UnitID.OVERLORD, _UnitID.OVERSEER}
+        ]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda e: unit.distance_to(e))
+
+    def _find_nearest_threat_to_position(
+        self,
+        position: 'Point2',
+        bot: 'ManifestorBot',
+        radius: float = 20.0,
+    ) -> Optional[Unit]:
+        """
+        Find the nearest enemy unit within *radius* of *position* that can
+        deal damage (i.e. has non-zero DPS or is a structure with weapons).
+
+        Useful for defensive tactics protecting a base or choke point: pass
+        the base location or choke centroid as *position*.
+
+        Returns None if no threatening enemy is in range.
+        """
+        nearby = bot.enemy_units.closer_than(radius, position)
+        if not nearby:
+            return None
+
+        threatening = [
+            e for e in nearby
+            if (e.ground_dps > 0 if hasattr(e, 'ground_dps') else True)
+        ]
+        if not threatening:
+            return None
+
+        return min(threatening, key=lambda e: e.distance_to(position))
 
     def _unit_distance_to_army_centroid(
         self,
