@@ -348,7 +348,9 @@ class TerrainManager(Manager, IManagerMediator):
             Location of our natural expansion.
 
         """
-        return self.own_expansions[0][0]
+        if self.own_expansions:
+            return self.own_expansions[0][0]
+        return None
 
     @cached_property
     def own_third(self) -> Point2:
@@ -360,7 +362,9 @@ class TerrainManager(Manager, IManagerMediator):
             Location of our third base.
 
         """
-        return self.own_expansions[1][0]
+        if len(self.own_expansions) > 1:
+            return self.own_expansions[1][0]
+        return None
 
     @cached_property
     def own_fourth(self) -> Point2:
@@ -372,7 +376,9 @@ class TerrainManager(Manager, IManagerMediator):
             Location of our fourth base.
 
         """
-        return self.own_expansions[2][0]
+        if len(self.own_expansions) > 2:
+            return self.own_expansions[2][0]
+        return None
 
     def get_closest_overlord_spot(self, from_pos: Point2) -> Point2:
         """Given a position, find the closest high ground overlord spot.

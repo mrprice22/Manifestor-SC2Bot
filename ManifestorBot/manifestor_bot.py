@@ -68,7 +68,8 @@ class ManifestorBot(AresBot):
         import asyncio
         # Set the state immediately since parent method won't complete synchronously
         self.state = state
-        # Schedule the async parent method to run later
+        # Create a task for the async parent method but don't wait for it
+        # This prevents the "coroutine was never awaited" warning
         asyncio.create_task(super()._prepare_step(state, proto_game_info))
         
     async def on_start(self) -> None:
@@ -144,11 +145,17 @@ class ManifestorBot(AresBot):
                 
                 # Action suppression logic
                 if self._should_suppress_idea(unit, best_idea):
-                    self.suppressed_ideas[unit.tag] = self.state.game_loop
+                    # Record that this unit thought about acting this frame.
+                    # This is NOT the action cooldown — it just prevents the
+                    # unit from hammering _should_suppress_idea 6× per second.
+                    # The action cooldown is recorded below after execution.
                     continue
-                    
-                # Idea passed suppression - execute it
+
+                # Idea passed suppression — execute it and start the cooldown.
+                # New units are not in suppressed_ideas yet, so they act on
+                # their very first idea. After that the cooldown applies.
                 await self._execute_idea(unit, best_idea)
+                self.suppressed_ideas[unit.tag] = self.state.game_loop
                 
     def _generate_ideas_for_unit(self, unit: Unit) -> List[TacticIdea]:
         """
@@ -175,50 +182,31 @@ class ManifestorBot(AresBot):
         
     def _should_suppress_idea(self, unit: Unit, idea: TacticIdea) -> bool:
         """
-        Action suppression: only act if the expected value of acting
-        clearly exceeds the expected value of doing nothing.
+        Action suppression: only act if confidence clearly exceeds the threshold.
+
+        The strategy-specific confidence adjustment is now handled inside each
+        tactic's generate_idea() via TacticalProfile additive biases. This
+        function applies a single universal threshold so the suppression gate
+        is simple and predictable.
+
+        New units (not in suppressed_ideas) are never suppressed by the
+        cooldown check — they act on their first qualifying idea immediately.
         """
-        # Confidence threshold - ideas below this are always suppressed
-        if idea.confidence < 0.4:
+        # Universal confidence floor
+        if idea.confidence < 0.40:
             return True
-            
-        # Don't spam the same unit with ideas too frequently
+
+        # Cooldown: has this unit acted recently?
         if unit.tag in self.suppressed_ideas:
             frames_since_last = self.state.game_loop - self.suppressed_ideas[unit.tag]
-            if frames_since_last < 50:  # ~2 seconds
+            if frames_since_last < 50:  # ~2 seconds at 22.4 fps
                 return True
-                
-        # If unit is executing something important, don't interrupt
+
+        # Don't interrupt units with deliberately queued commands
         if unit.orders and len(unit.orders) > 1:
-            # Has queued commands - probably doing something deliberate
             return True
-            
-        # Strategic override: some strategies demand action, others demand patience
-        strategy_aggression_modifier = self._get_strategy_action_bias()
-        adjusted_threshold = 0.6 - (strategy_aggression_modifier * 0.2)
-        
-        if idea.confidence < adjusted_threshold:
-            return True
-            
-        # Passed all suppression checks
+
         return False
-        
-    def _get_strategy_action_bias(self) -> float:
-        """
-        Different strategies have different biases toward action vs. patience.
-        Returns a value from -1.0 (very patient) to 1.0 (very aggressive).
-        """
-        strategy_biases = {
-            Strategy.JUST_GO_PUNCH_EM: 1.0,
-            Strategy.ALL_IN: 0.9,
-            Strategy.KEEP_EM_BUSY: 0.7,
-            Strategy.WAR_ON_SANITY: 0.6,
-            Strategy.BLEED_OUT: 0.4,
-            Strategy.STOCK_STANDARD: 0.0,
-            Strategy.WAR_OF_ATTRITION: -0.2,
-            Strategy.DRONE_ONLY_FORTRESS: -0.8,
-        }
-        return strategy_biases.get(self.current_strategy, 0.0)
         
     async def _execute_idea(self, unit: Unit, idea: TacticIdea) -> None:
         """
@@ -271,7 +259,7 @@ class ManifestorBot(AresBot):
         
         # Commentary on strategy change
         if self.commentary_enabled:
-            msg = f"PIVOT: {old_strategy.value} → {new_strategy.value}"
+            msg = f"PIVOT: {old_strategy.value} â†’ {new_strategy.value}"
             if reason:
                 msg += f" ({reason})"
             # Use asyncio to schedule the chat for next frame
@@ -279,13 +267,33 @@ class ManifestorBot(AresBot):
             asyncio.create_task(self._chat(msg))
             
     def _load_tactic_modules(self) -> None:
-        """Load all tactic modules."""
+        """
+        Load and register all tactic modules in priority order.
+
+        Order matters: when two tactics tie on confidence, the one registered
+        earlier wins (because ideas are sorted and the first element taken).
+        General ordering principle:
+          1. Offensive/positioning tactics (high upside, context-specific)
+          2. Defensive fallback (universal, intentionally capped at 0.60)
+        """
+        from ManifestorBot.manifests.tactics.offensive import (
+            StutterForwardTactic,
+            HarassWorkersTactic,
+        )
+        from ManifestorBot.manifests.tactics.positioning import (
+            RallyToArmyTactic,
+            HoldChokePointTactic,
+        )
+        from ManifestorBot.manifests.tactics.flank import FlankTactic
         from ManifestorBot.manifests.tactics.defensive import KeepUnitSafeTactic
-        
-        # Register all tactics
+
         self.tactic_modules = [
-            KeepUnitSafeTactic(),
-            # TODO: Add more tactics as they're implemented
+            StutterForwardTactic(),   # Press favorable engagements
+            HarassWorkersTactic(),    # Bleed enemy economy
+            FlankTactic(),            # Perpendicular attack vector
+            HoldChokePointTactic(),   # Defensive positioning
+            RallyToArmyTactic(),      # Cohesion — rejoin the army
+            KeepUnitSafeTactic(),     # Fallback: retreat to safety
         ]
         
     async def _chat(self, message: str) -> None:
