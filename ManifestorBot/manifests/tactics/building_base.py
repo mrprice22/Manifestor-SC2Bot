@@ -259,19 +259,25 @@ class BuildingTacticModule(ABC):
 
     def _execute_train(
         self,
-        building: Unit,
+        building: "Unit",
         idea: BuildingIdea,
         bot: "ManifestorBot",
     ) -> bool:
-        """
-        Queue ``idea.train_type`` from ``building``.
-
-        Uses python-sc2's ``train()`` helper which handles ability lookup,
-        resource checks, and supply checks automatically. Returns True if
-        the order was placed, False otherwise.
-        """
         if idea.train_type is None:
             return False
+
+        # Zerg units are trained from larva, not from the hatchery itself.
+        # If the target unit is a larva-based unit, select a larva near this building.
+        from ares.dicts.does_not_use_larva import DOES_NOT_USE_LARVA
+        from sc2.ids.unit_typeid import UnitTypeId as UnitID
+
+        if bot.race == "Zerg" and idea.train_type not in DOES_NOT_USE_LARVA:
+            nearby_larva = bot.larva.closer_than(15, building.position)
+            if not nearby_larva:
+                return False  # no larva available yet
+            larva = nearby_larva.random
+            return larva.train(idea.train_type)
+
         return building.train(idea.train_type)
 
     def _execute_research(

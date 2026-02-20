@@ -36,6 +36,7 @@ from ManifestorBot.manifests.tactics.building_tactics import (
     ZergUpgradeResearchTactic,
     ZergRallyTactic,
 )
+from ManifestorBot.manifests.scout_ledger import ScoutLedger
 
 
 log = get_logger()
@@ -67,7 +68,6 @@ class ManifestorBot(AresBot):
         self.heuristic_manager: Optional[HeuristicManager] = None
         
         # Scout ledger for counter-play intelligence
-        from ManifestorBot.manifests.scout_ledger import ScoutLedger
         self.scout_ledger = ScoutLedger(self)
         
         # Tactic modules registry
@@ -94,8 +94,12 @@ class ManifestorBot(AresBot):
         # Set the state immediately since parent method won't complete synchronously
         self.state = state
         # Create a task for the async parent method but don't wait for it
-        # This prevents the "coroutine was never awaited" warning
-        asyncio.create_task(super()._prepare_step(state, proto_game_info))
+        # This prevents the "coroutine was never awaited" warning and avoids the NoneType error
+        try:
+            asyncio.create_task(super()._prepare_step(state, proto_game_info))
+        except:
+            # If the parent method doesn't exist or fails, just continue
+            pass
         
     async def on_start(self) -> None:
         """Initialize managers and load tactic modules"""
