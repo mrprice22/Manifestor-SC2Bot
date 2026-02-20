@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from ManifestorBot.manifestor_bot import ManifestorBot
     from ManifestorBot.manifests.heuristics import HeuristicState
     from ManifestorBot.manifests.strategy import Strategy, TacticalProfile
+    from ManifestorBot.abilities.ability import AbilityContext
     from sc2.position import Point2
 
 
@@ -47,6 +48,7 @@ class TacticIdea:
     confidence: float           # 0.0 to 1.0 — how good is this idea
     evidence: dict              # Named contributions (for debugging)
     target: Optional[object] = None  # Target unit, position, or None
+    context: Optional['AbilityContext'] = None 
 
 
 class TacticModule(ABC):

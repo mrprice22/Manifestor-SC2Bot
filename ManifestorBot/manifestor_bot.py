@@ -36,7 +36,14 @@ from ManifestorBot.manifests.tactics.building_tactics import (
     ZergUpgradeResearchTactic,
     ZergRallyTactic,
 )
+from ManifestorBot.abilities.ability_registry import ability_registry
+from ManifestorBot.abilities.ability_selector import ability_selector
+from ManifestorBot.abilities.worker_abilities import (
+    register_worker_abilities,
+    MiningTactic,
+)
 from ManifestorBot.manifests.scout_ledger import ScoutLedger
+
 
 
 log = get_logger()
@@ -98,7 +105,11 @@ class ManifestorBot(AresBot):
         # Load all tactic modules
         self._load_tactic_modules()
         self._load_building_modules()
-
+        
+        # Register unit abilities
+        register_worker_abilities()
+        log.info("Ability registry:\n%s", ability_registry.summary())
+    
         log.game_event("GAME_START", f"Strategy: {self.current_strategy.value}", frame=0)
         log.info("Loaded %d tactic modules", len(self.tactic_modules), frame=0)
         
@@ -179,6 +190,9 @@ class ManifestorBot(AresBot):
             unit_role = self._get_unit_role(worker.tag)
             if unit_role in {UnitRole.BUILDING}:
                 continue
+            # Workers with GATHERING role still join the pool —
+            # MiningTactic will generate a mining idea which can be
+            # out-bid by combat tactics (CitizensArrest, etc.)
             all_candidate_units.append(worker)
 
         # ------------------------------------------------------------------ #
@@ -337,19 +351,20 @@ class ManifestorBot(AresBot):
         
     async def _execute_idea(self, unit: Unit, idea: TacticIdea) -> None:
         """
-        Convert a tactic idea into actual game commands using Ares behaviors.
+        Route idea execution through the AbilitySelector.
+
+        The selector:
+          1. Checks if the unit has registered abilities → uses registry path.
+          2. Falls back to tactic.create_behavior() for unported tactics.
+
         """
-        maneuver = CombatManeuver()
-        behavior = idea.tactic_module.create_behavior(unit, idea, self)
-        if behavior:
-            maneuver.add(behavior)
-            self.register_behavior(maneuver)
-            
-        if idea.confidence > 0.7 and self.commentary_enabled:
-            await self._chat(
-                f"{unit.type_id.name[:4]}-{unit.tag % 1000}: "
-                f"{idea.tactic_module.name} ({idea.confidence:.2f})"
-            )
+        success = ability_selector.select_and_execute(unit, idea, self)
+
+        if success and idea.confidence > 0.7 and self.commentary_enabled:
+           await self._chat(
+               f"{unit.type_id.name[:4]}-{unit.tag % 1000}: "
+               f"{idea.tactic_module.name} ({idea.confidence:.2f})"
+           )
         
     def change_strategy(self, new_strategy: Strategy, reason: str = "") -> None:
         """
@@ -392,6 +407,7 @@ class ManifestorBot(AresBot):
         from ManifestorBot.manifests.tactics.defensive import KeepUnitSafeTactic
 
         self.tactic_modules = [
+            MiningTactic(),
             StutterForwardTactic(),
             HarassWorkersTactic(),
             FlankTactic(),
