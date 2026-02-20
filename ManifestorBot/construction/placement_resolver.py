@@ -1,0 +1,216 @@
+"""
+PlacementResolver — wraps Ares placement APIs for the construction system.
+
+Design philosophy
+-----------------
+We do NOT reinvent placement logic. Ares already has:
+  - ``mediator.get_placements_dict``  — pre-computed grid-based placements
+  - ``ai.request_zerg_placement()``   — async deferred placement (Zerg only)
+  - ``mediator.request_building_placement()`` — sync placement query
+
+For Zerg, ``request_zerg_placement`` is the right API: it defers to Ares'
+ZergPlacementManager which handles worker selection and pathfinding internally.
+Our job is to decide *what* to build and *near which base* — Ares figures out
+the precise tile.
+
+What we add
+-----------
+1. A synchronous fallback for cases where we need the placement now (e.g. to
+   show the intended build site in commentary or for pre-flight validation).
+2. A ``can_place_near()`` query so BuildAbility.can_use() can gate itself
+   without triggering a morph command.
+3. Centralized logging of all placement requests.
+
+Usage
+-----
+    resolver = PlacementResolver()
+
+    # Async deferred (preferred for Zerg — lets Ares handle worker selection)
+    resolver.request_async(bot, UnitID.SPAWNINGPOOL, base_location=bot.start_location)
+
+    # Synchronous query (for validation, not for issuing commands)
+    pos = resolver.find_placement(bot, UnitID.SPAWNINGPOOL, near=bot.start_location)
+    if pos:
+        drone.build(UnitID.SPAWNINGPOOL, pos)
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Optional
+
+from sc2.ids.unit_typeid import UnitTypeId as UnitID
+from sc2.position import Point2
+
+from ManifestorBot.logger import get_logger
+
+if TYPE_CHECKING:
+    from ManifestorBot.manifestor_bot import ManifestorBot
+
+log = get_logger()
+
+
+class PlacementResolver:
+    """
+    Placement resolution helper.
+
+    Stateless — all context is passed in per-call.
+    One instance lives on the bot as ``self.placement_resolver``.
+    """
+
+    # ------------------------------------------------------------------
+    # Primary API: async deferred request (Zerg preferred path)
+    # ------------------------------------------------------------------
+
+    def request_async(
+        self,
+        bot: "ManifestorBot",
+        structure_type: UnitID,
+        base_location: Optional[Point2] = None,
+        frame: int = 0,
+    ) -> None:
+        """
+        Submit an async placement request to Ares.
+
+        For Zerg this calls ``bot.request_zerg_placement()``, which queues the
+        request for Ares' ZergPlacementManager to resolve on the next tick.
+        Ares will select an appropriate worker and issue the build command
+        without further intervention from us.
+
+        This is the correct path for new construction orders. The result
+        (drone dispatched) will be detected by MorphTracker on the next
+        update() call.
+
+        Parameters
+        ----------
+        bot : ManifestorBot
+        structure_type : UnitTypeId
+            What to build.
+        base_location : Point2 | None
+            Build near this base. Defaults to bot.start_location.
+        frame : int
+            Current game loop (for logging only).
+        """
+        if base_location is None:
+            base_location = bot.start_location
+
+        log.debug(
+            "PlacementResolver: async request %s near %s",
+            structure_type.name,
+            base_location,
+            frame=frame,
+        )
+
+        bot.request_zerg_placement(base_location, structure_type)
+
+    # ------------------------------------------------------------------
+    # Secondary API: synchronous query (for validation / commentary)
+    # ------------------------------------------------------------------
+
+    def find_placement(
+        self,
+        bot: "ManifestorBot",
+        structure_type: UnitID,
+        near: Optional[Point2] = None,
+    ) -> Optional[Point2]:
+        """
+        Find a valid placement tile for ``structure_type`` near ``near``.
+
+        Does NOT issue any command. Returns the tile or None if no valid
+        placement exists right now (e.g. all spots occupied).
+
+        Uses ``mediator.request_building_placement()`` which is a synchronous
+        query into the Ares placement solver.
+
+        This is used by:
+        - BuildAbility.can_use() to verify a placement exists before claiming
+          a ConstructionOrder (avoids claiming an order we can't fulfil).
+        - Commentary / logging to describe where a building will go.
+        """
+        if near is None:
+            near = bot.start_location
+
+        try:
+            placement: Optional[Point2] = bot.mediator.request_building_placement(
+                base_location=near,
+                structure_type=structure_type,
+            )
+            return placement
+        except Exception as exc:
+            # Ares may raise if no placements are registered for this type yet.
+            log.debug(
+                "PlacementResolver.find_placement(%s) raised: %s",
+                structure_type.name,
+                exc,
+            )
+            return None
+
+    def can_place_near(
+        self,
+        bot: "ManifestorBot",
+        structure_type: UnitID,
+        near: Optional[Point2] = None,
+    ) -> bool:
+        """
+        Return True if at least one valid placement tile exists for
+        ``structure_type`` near ``near``.
+
+        Cheap guard used in BuildAbility.can_use().
+        """
+        return self.find_placement(bot, structure_type, near) is not None
+
+    # ------------------------------------------------------------------
+    # Best base selection
+    # ------------------------------------------------------------------
+
+    def best_base_for(
+        self,
+        bot: "ManifestorBot",
+        structure_type: UnitID,
+    ) -> Point2:
+        """
+        Choose the most appropriate base location to build ``structure_type`` at.
+
+        Current heuristic:
+        - Prefer the main base (start_location) for tech / eco buildings.
+        - Prefer the nearest expansion that has a townhall for expansions.
+        - Fall back to start_location if nothing better exists.
+
+        This is intentionally simple and can be extended with strategy-specific
+        logic (e.g. building a Spine Crawler at a threatened expansion).
+        """
+        # Tech and production buildings → main base
+        _MAIN_BASE_ONLY = {
+            UnitID.SPAWNINGPOOL,
+            UnitID.EVOLUTIONCHAMBER,
+            UnitID.LAIR,
+            UnitID.HIVE,
+            UnitID.SPIRE,
+            UnitID.GREATERSPIRE,
+            UnitID.HYDRALISKDEN,
+            UnitID.ROACHWARREN,
+            UnitID.BANELINGNEST,
+            UnitID.ULTRALISKCAVERN,
+            UnitID.INFESTATIONPIT,
+            UnitID.NYDUSNETWORK,
+            UnitID.LURKERDENMP,
+        }
+        if structure_type in _MAIN_BASE_ONLY:
+            return bot.start_location
+
+        # Extractors → nearest base with available gas
+        if structure_type == UnitID.EXTRACTOR:
+            for th in bot.townhalls.ready:
+                nearby_gas = bot.vespene_geyser.closer_than(10, th.position)
+                already_built = bot.gas_buildings.closer_than(10, th.position)
+                if len(nearby_gas) > len(already_built):
+                    return th.position
+            return bot.start_location
+
+        # Hatcheries → nearest unoccupied expansion
+        if structure_type == UnitID.HATCHERY:
+            taken = {th.position for th in bot.townhalls}
+            for exp in bot.expansion_locations_list:
+                if exp not in taken:
+                    return exp
+
+        return bot.start_location

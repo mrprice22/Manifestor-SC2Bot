@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Optional, List
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
 from sc2.ids.upgrade_id import UpgradeId
 from sc2.position import Point2
+from ManifestorBot.construction import ConstructionQueue, ConstructionOrder
 
 from ManifestorBot.manifests.tactics.building_base import (
     BuildingTacticModule,
@@ -27,12 +28,31 @@ from ManifestorBot.manifests.tactics.building_base import (
     BuildingIdea,
 )
 
+from ManifestorBot.logger import get_logger
+log = get_logger()
+
 if TYPE_CHECKING:
     from ManifestorBot.manifestor_bot import ManifestorBot
     from ManifestorBot.manifests.heuristics import HeuristicState
     from ManifestorBot.manifests.strategy import Strategy
     from sc2.unit import Unit
+    
 
+
+# Priority-ordered list of structures to build and their prerequisites.
+# Each entry: (structure_type, prerequisite_structure_or_None, min_minerals)
+_STRUCTURE_PRIORITY = [
+    # (what_to_build,              requires_existing,           minerals)
+    (UnitID.SPAWNINGPOOL,          None,                        200),
+    (UnitID.EXTRACTOR,             UnitID.SPAWNINGPOOL,          75),
+    (UnitID.ROACHWARREN,           UnitID.SPAWNINGPOOL,         150),
+    (UnitID.EVOLUTIONCHAMBER,      UnitID.SPAWNINGPOOL,         75),
+    (UnitID.HYDRALISKDEN,          UnitID.LAIR,                 100),
+    (UnitID.SPIRE,                 UnitID.LAIR,                 200),
+    (UnitID.BANELINGNEST,          UnitID.SPAWNINGPOOL,         100),
+    (UnitID.INFESTATIONPIT,        UnitID.LAIR,                 100),
+    (UnitID.ULTRALISKCAVERN,       UnitID.HIVE,                 150),
+]
 
 # ---------------------------------------------------------------------------
 # 1. Worker Production
@@ -469,3 +489,104 @@ class ZergRallyTactic(BuildingTacticModule):
             target = army_center
 
         return target
+
+
+class ZergStructureBuildTactic(BuildingTacticModule):
+    '''
+    Decides when to build a new Zerg structure and enqueues a ConstructionOrder.
+
+    This module runs against HATCHERY / LAIR / HIVE, not against workers.
+    It uses the hatchery as a "home base" anchor to determine the build location.
+    The actual drone dispatch is handled by BuildingTactic + BuildAbility.
+
+    Unlike training modules, this module fires on the HATCHERY loop rather than
+    the structure-specific building loop, because it's the hatchery that "owns"
+    the decision of which tech to build next.
+    '''
+
+    BUILDING_TYPES = frozenset({
+        UnitID.HATCHERY,
+        UnitID.LAIR,
+        UnitID.HIVE,
+    })
+
+    def is_applicable(self, building, bot) -> bool:
+        if building.type_id not in self.BUILDING_TYPES:
+            return False
+        if not self._building_is_ready(building):
+            return False
+        # Don't queue construction if one is already pending of the same type
+        # (checked inside enqueue, but fast-fail here to avoid scoring)
+        if not bot.construction_queue:
+            return False
+        return True
+
+    def generate_idea(self, building, bot, heuristics, current_strategy, counter_ctx):
+        # Walk structure priority list; find the first buildable, not-yet-built structure
+        for structure_type, prerequisite, min_minerals in _STRUCTURE_PRIORITY:
+            # Skip if we already have it (built or building)
+            if bot.structures(structure_type).amount > 0:
+                continue
+            if bot.already_pending(structure_type) > 0:
+                continue
+            if bot.construction_queue.count_active_of_type(structure_type) > 0:
+                continue
+
+            # Prerequisite check
+            if prerequisite and not bot.structures(prerequisite).ready:
+                continue
+
+            # Affordability gate
+            if bot.minerals < min_minerals:
+                continue
+
+            # Tech progress (e.g. Lair morphing before Den)
+            if bot.tech_requirement_progress(structure_type) < 0.85:
+                continue
+
+            confidence = 0.80
+            evidence = {"structure_priority": 0.80, "type": structure_type.name}
+
+            profile = current_strategy.profile()
+            agg = profile.engage_bias * 0.10
+            confidence += agg
+            evidence["strategy_agg"] = round(agg, 3)
+
+            return BuildingIdea(
+                building_module=self,
+                action=BuildingAction.TRAIN,   # reuse TRAIN action as "enqueue build"
+                confidence=confidence,
+                evidence=evidence,
+                train_type=structure_type,     # store structure type in train_type field
+            )
+
+        return None
+
+    def execute(self, building, idea, bot) -> bool:
+        if idea.train_type is None:
+            return False
+
+        # Choose base location from the hatchery's position
+        base_location = building.position
+
+        # Use PlacementResolver to pick best base if hatchery is at an expansion
+        try:
+            base_location = bot.placement_resolver.best_base_for(bot, idea.train_type)
+        except Exception:
+            pass
+
+        order = ConstructionOrder(
+            structure_type=idea.train_type,
+            base_location=base_location,
+            priority=80,
+            created_frame=bot.state.game_loop,
+        )
+
+        accepted = bot.construction_queue.enqueue(order)
+        if accepted:
+            log.game_event(
+                "BUILD_ENQUEUED",
+                f"{idea.train_type.name} near {base_location}",
+                frame=bot.state.game_loop,
+            )
+        return accepted

@@ -35,6 +35,7 @@ from ManifestorBot.manifests.tactics.building_tactics import (
     ZergArmyProductionTactic,
     ZergUpgradeResearchTactic,
     ZergRallyTactic,
+    ZergStructureBuildTactic, 
 )
 from ManifestorBot.abilities.ability_registry import ability_registry
 from ManifestorBot.abilities.ability_selector import ability_selector
@@ -43,6 +44,16 @@ from ManifestorBot.abilities.worker_abilities import (
     MiningTactic,
 )
 from ManifestorBot.manifests.scout_ledger import ScoutLedger
+from ManifestorBot.construction import (
+    ConstructionQueue,
+    ConstructionOrder,
+    MorphTracker,
+    PlacementResolver,
+)
+from ManifestorBot.construction.build_ability import (
+    BuildingTactic,
+    register_construction_abilities,
+)
 
 
 
@@ -76,6 +87,11 @@ class ManifestorBot(AresBot):
         
         # Scout ledger for counter-play intelligence
         self.scout_ledger = ScoutLedger(self)
+
+        # Construction system
+        self.construction_queue: ConstructionQueue = ConstructionQueue()
+        self.morph_tracker: MorphTracker = MorphTracker()
+        self.placement_resolver: PlacementResolver = PlacementResolver()
         
         # Tactic modules registry
         self.tactic_modules: List[TacticModule] = []
@@ -108,6 +124,7 @@ class ManifestorBot(AresBot):
         
         # Register unit abilities
         register_worker_abilities()
+        register_construction_abilities()
         log.info("Ability registry:\n%s", ability_registry.summary())
     
         log.game_event("GAME_START", f"Strategy: {self.current_strategy.value}", frame=0)
@@ -121,6 +138,7 @@ class ManifestorBot(AresBot):
         """Main game loop - this is where the magic happens"""
         await super().on_step(iteration)
         
+        self.morph_tracker.update(self)
         self.scout_ledger.update(iteration)
 
         # STAGE 1: Calculate all heuristics
@@ -407,6 +425,7 @@ class ManifestorBot(AresBot):
         from ManifestorBot.manifests.tactics.defensive import KeepUnitSafeTactic
 
         self.tactic_modules = [
+            BuildingTactic(),
             MiningTactic(),
             StutterForwardTactic(),
             HarassWorkersTactic(),
@@ -456,6 +475,7 @@ class ManifestorBot(AresBot):
             ZergWorkerProductionTactic(),  # Workers before army by default
             ZergArmyProductionTactic(),    # Army when strategy pushes for it
             ZergUpgradeResearchTactic(),   # Upgrades when affordable
+            ZergStructureBuildTactic(),    # Build structures when needed
         ]
 
         log.info(
@@ -579,18 +599,16 @@ class ManifestorBot(AresBot):
 
         return False
 
+# ---- Outside the ManifestorBot class, at module level ----
 
-    # ---- E4: Commentary helper ----
-
-    def _building_idea_summary(idea: BuildingIdea, structure) -> str:
-        """Format a brief chat string for a building's executed idea."""
-        from ManifestorBot.manifests.tactics.building_base import BuildingAction
-
-        bname = structure.type_id.name[:6]
-        if idea.action == BuildingAction.TRAIN and idea.train_type:
-            return f"{bname}: training {idea.train_type.name} ({idea.confidence:.2f})"
-        if idea.action == BuildingAction.RESEARCH and idea.upgrade:
-            return f"{bname}: researching {idea.upgrade.name} ({idea.confidence:.2f})"
-        if idea.action == BuildingAction.SET_RALLY and idea.rally_point:
-            return f"{bname}: rally → ({idea.rally_point.x:.0f},{idea.rally_point.y:.0f})"
-        return f"{bname}: building action ({idea.confidence:.2f})"
+def _building_idea_summary(idea: BuildingIdea, structure) -> str:
+    """Format a brief chat string for a building's executed idea."""
+    from ManifestorBot.manifests.tactics.building_base import BuildingAction
+    bname = structure.type_id.name[:6]
+    if idea.action == BuildingAction.TRAIN and idea.train_type:
+        return f"{bname}: training {idea.train_type.name} ({idea.confidence:.2f})"
+    if idea.action == BuildingAction.RESEARCH and idea.upgrade:
+        return f"{bname}: researching {idea.upgrade.name} ({idea.confidence:.2f})"
+    if idea.action == BuildingAction.SET_RALLY and idea.rally_point:
+        return f"{bname}: rally → ({idea.rally_point.x:.0f},{idea.rally_point.y:.0f})"
+    return f"{bname}: building action ({idea.confidence:.2f})"
