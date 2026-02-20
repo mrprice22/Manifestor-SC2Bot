@@ -87,20 +87,7 @@ class ManifestorBot(AresBot):
         self.commentary_enabled: bool = True
         self.last_commentary_frame: int = 0
         self.commentary_throttle: int = 112  # ~5 seconds at normal speed
-        
-    def _prepare_step(self, state, proto_game_info) -> None:
-        """Override to handle the async parent method properly"""
-        import asyncio
-        # Set the state immediately since parent method won't complete synchronously
-        self.state = state
-        # Create a task for the async parent method but don't wait for it
-        # This prevents the "coroutine was never awaited" warning and avoids the NoneType error
-        try:
-            asyncio.create_task(super()._prepare_step(state, proto_game_info))
-        except:
-            # If the parent method doesn't exist or fails, just continue
-            pass
-        
+               
     async def on_start(self) -> None:
         """Initialize managers and load tactic modules"""
         await super().on_start()

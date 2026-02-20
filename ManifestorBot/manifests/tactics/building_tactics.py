@@ -67,6 +67,8 @@ class ZergWorkerProductionTactic(BuildingTacticModule):
             return False
         if bot.minerals < 50:
             return False
+        if not bot.larva:          # ← add this
+            return False
         return True
 
     def generate_idea(

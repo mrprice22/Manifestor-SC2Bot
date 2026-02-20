@@ -39,6 +39,7 @@ from sc2.ids.ability_id import AbilityId
 from sc2.ids.upgrade_id import UpgradeId
 from sc2.unit import Unit
 from sc2.position import Point2
+from sc2.data import Race
 
 if TYPE_CHECKING:
     from ManifestorBot.manifestor_bot import ManifestorBot
@@ -259,24 +260,22 @@ class BuildingTacticModule(ABC):
 
     def _execute_train(
         self,
-        building: "Unit",
+        building: Unit,
         idea: BuildingIdea,
         bot: "ManifestorBot",
     ) -> bool:
         if idea.train_type is None:
             return False
 
-        # Zerg units are trained from larva, not from the hatchery itself.
-        # If the target unit is a larva-based unit, select a larva near this building.
+        # Zerg trains units from larva, not from the hatchery directly.
+        # Find a larva near this hatchery and issue the train command on it.
+        from sc2.data import Race
         from ares.dicts.does_not_use_larva import DOES_NOT_USE_LARVA
-        from sc2.ids.unit_typeid import UnitTypeId as UnitID
-
-        if bot.race == "Zerg" and idea.train_type not in DOES_NOT_USE_LARVA:
+        if bot.race == Race.Zerg and idea.train_type not in DOES_NOT_USE_LARVA:
             nearby_larva = bot.larva.closer_than(15, building.position)
             if not nearby_larva:
-                return False  # no larva available yet
-            larva = nearby_larva.random
-            return larva.train(idea.train_type)
+                return False  # no larva available near this hatchery
+            return nearby_larva.random.train(idea.train_type)
 
         return building.train(idea.train_type)
 

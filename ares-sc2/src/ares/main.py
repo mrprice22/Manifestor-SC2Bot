@@ -170,14 +170,8 @@ class AresBot(CustomBotAI):
         loop: int = state.game_loop
         if self.realtime and self.last_game_loop + 4 > loop and loop != 0:
             return
-
         self.last_game_loop = loop
-        # Try to call parent _prepare_step if it exists and is async
-        try:
-            return await super()._prepare_step(state, proto_game_info)
-        except:
-            # If parent method doesn't exist or fails, just continue
-            return None
+        return super()._prepare_step(state, proto_game_info)  # ← no await
 
     # noinspection PyFinal
     def _prepare_units(self):  # pragma: no cover
