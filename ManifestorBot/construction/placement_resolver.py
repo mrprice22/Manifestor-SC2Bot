@@ -102,6 +102,40 @@ class PlacementResolver:
 
         bot.request_zerg_placement(base_location, structure_type)
 
+    def request_async(self, bot, structure_type, base_location=None, frame=0):
+        if base_location is None:
+            base_location = bot.start_location
+
+        # Extractors require a geyser Unit, not a position — handle separately
+        if structure_type == UnitID.EXTRACTOR:
+            self._build_extractor(bot, base_location, frame)
+            return
+
+        log.debug("PlacementResolver: async request %s near %s",
+                structure_type.name, base_location, frame=frame)
+        bot.request_zerg_placement(base_location, structure_type)
+
+    def _build_extractor(self, bot, near: Point2, frame: int) -> None:
+        """Find a free geyser near `near` and issue build_gas directly."""
+        existing_gas = bot.gas_buildings
+        free_geysers = [
+            g for g in bot.vespene_geyser.closer_than(12, near)
+            if not existing_gas.closer_than(1.0, g)
+        ]
+        if not free_geysers:
+            log.debug("PlacementResolver: no free geyser near %s for EXTRACTOR", near, frame=frame)
+            return
+
+        geyser = min(free_geysers, key=lambda g: g.distance_to(near))
+        worker = bot.select_build_worker(geyser.position)
+        if worker is None:
+            log.debug("PlacementResolver: no build worker available for EXTRACTOR", frame=frame)
+            return
+
+        worker.build_gas(geyser)
+        log.debug("PlacementResolver: EXTRACTOR dispatched | drone=%s geyser=%s",
+                worker.tag, geyser.tag, frame=frame)
+
     # ------------------------------------------------------------------
     # Secondary API: synchronous query (for validation / commentary)
     # ------------------------------------------------------------------
