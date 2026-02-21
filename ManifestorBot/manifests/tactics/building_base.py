@@ -361,6 +361,6 @@ class BuildingTacticModule(ABC):
         for struct in bot.structures(researcher_type):
             for order in struct.orders:
                 # AbilityId names contain the upgrade name — good enough for a gate
-                if upgrade.name.lower() in order.ability.name.lower():
+                if upgrade.name.lower() in order.ability.id.name.lower():
                     return True
         return False

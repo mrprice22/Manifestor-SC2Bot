@@ -296,7 +296,7 @@ class MorphTracker:
         from sc2.ids.ability_id import AbilityId
         _BUILD_ABILITY_NAMES = {"BUILD", "ZERGBUILD", "MORPH"}
         for order in drone.orders:
-            ability_name = order.ability.name.upper()
+            ability_name = order.ability.id.name.upper()
             if any(kw in ability_name for kw in _BUILD_ABILITY_NAMES):
                 return True
         return False

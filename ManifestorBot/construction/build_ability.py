@@ -80,6 +80,7 @@ class BuildAbility(Ability):
     UNIT_TYPES: Set[UnitID] = {UnitID.DRONE}
     GOAL: str = "build"
     priority: int = 95
+    
 
     def can_use(self, unit: Unit, context: AbilityContext, bot: "ManifestorBot") -> bool:
         """
@@ -101,12 +102,6 @@ class BuildAbility(Ability):
 
         # Can we afford it?
         if not self._can_afford(order, bot):
-            return False
-
-        # Does a placement exist? (Uses cached resolver — cheap)
-        if not bot.placement_resolver.can_place_near(
-            bot, order.structure_type, near=order.base_location
-        ):
             return False
 
         return True
