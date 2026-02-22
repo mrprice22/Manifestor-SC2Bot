@@ -227,7 +227,7 @@ class ManifestorLogger:
             log.heuristics(self.heuristic_manager.get_state(), frame=iteration)
         """
         self._logger.debug(
-            "Heuristics | mom=%.2f army_val=%.2f agg=%.0f threat=%.2f econ=%.2f",
+            "Heuristics | mom=%.2f army_val=%.2f agg=%.0f threat=%.2f econ=%.2f phase=%.2f",
             getattr(state, "momentum", 0),
             getattr(state, "army_value_ratio", 0),
             getattr(state, "aggression_dial", 0),
