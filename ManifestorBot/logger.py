@@ -233,5 +233,6 @@ class ManifestorLogger:
             getattr(state, "aggression_dial", 0),
             getattr(state, "threat_level", 0),
             getattr(state, "economic_health", 0),
+            getattr(state, "game_phase", 0),
             extra={"frame": frame},
         )

@@ -1,0 +1,51 @@
+UseData: False
+BuildSelection: Cycle
+
+BuildChoices:
+  Zerg:
+    BotName: ManifestorBot
+    Cycle:
+      - StandardOpener
+      - EarlyAggression
+
+  Terran:
+    BotName: ManifestorBot
+    Cycle:
+      - StandardOpener
+
+  Protoss:
+    BotName: ManifestorBot
+    Cycle:
+      - StandardOpener
+
+  Random:
+    BotName: ManifestorBot
+    Cycle:
+      - StandardOpener
+
+Builds:
+  StandardOpener:
+    ConstantWorkerProductionTill: 18
+    OpeningBuildOrder:
+      - 13 spawningpool
+      - 17 expand @ nat
+      - 18 queen
+      - 18 overlord
+      - 0 queen
+      - 0 zerglingmovementspeed
+
+  EarlyAggression:
+    ConstantWorkerProductionTill: 16
+    OpeningBuildOrder:
+      - 12 spawningpool
+      - 14 queen
+      - 16 zergling x6
+      - 18 expand @ nat
+
+  TurtleEco:
+    ConstantWorkerProductionTill: 20
+    OpeningBuildOrder:
+      - 17 expand @ nat
+      - 18 spawningpool
+      - 20 queen
+      - 20 queen

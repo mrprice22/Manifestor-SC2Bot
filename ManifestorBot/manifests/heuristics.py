@@ -54,7 +54,8 @@ class HeuristicState:
     
     # Composite signals
     aggression_dial: float = 50.0       # 0-100 composite aggression score
-
+    game_phase: float = 0.0             # 0.0 = early, 1.0 = late
+    
 
 class HeuristicManager:
     """
@@ -83,6 +84,7 @@ class HeuristicManager:
         self._update_army_heuristics()
         self._update_meta_heuristics()
         self._update_aggression_dial()
+        self._update_game_phase()
         # After heuristics are calculated, layer in counter-play modifiers
         ctx = self.bot.scout_ledger.get_counter_context(self.bot.state.game_loop)
         # Modify the aggression dial based on counter prescriptions
@@ -401,6 +403,37 @@ class HeuristicManager:
         
         # Clamp to 0-100
         self.current_state.aggression_dial = max(0.0, min(100.0, score))
+
+    def _update_game_phase(self) -> None:
+        """
+        0.0 = early game  (pool/gate/rax, small armies, 1-2 bases)
+        0.5 = mid game    (first tech units, 3-4 bases, upgrades rolling)
+        1.0 = late game   (hive/templar/BC, 4+ bases, maxing supply)
+        
+        Intentionally a continuous float, not a discrete enum.
+        The game doesn't snap between phases — it slides.
+        """
+        score = 0.0
+        
+        # Base count is the strongest phase signal
+        bases = len(self.bot.townhalls)
+        score += min(0.3, bases * 0.075)  # 4 bases = 0.3
+        
+        # Tech tier: Lair = 0.2, Hive = 0.4
+        if self.bot.structures(UnitID.HIVE).ready:
+            score += 0.4
+        elif self.bot.structures(UnitID.LAIR).ready:
+            score += 0.2
+        
+        # Upgrade count (each completed upgrade = small phase bump)
+        upgrades = len(self.bot.state.upgrades)
+        score += min(0.2, upgrades * 0.03)
+        
+        # Army supply as fraction of 200
+        army_supply = self.bot.supply_used - len(self.bot.workers) - len(self.bot.structures)
+        score += min(0.1, army_supply / 200.0)
+        
+        self.current_state.game_phase = min(1.0, score)
         
     # ========== Helper Methods ==========
     

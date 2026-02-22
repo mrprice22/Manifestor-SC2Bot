@@ -108,8 +108,9 @@ class ManifestorBot(AresBot):
         
         # Chat commentary settings
         self.commentary_enabled: bool = True
+        self.unit_commentary_enabled: bool = False   # too spammy for normal games
         self.last_commentary_frame: int = 0
-        self.commentary_throttle: int = 112  # ~5 seconds at normal speed
+        self.commentary_throttle: int = 672 # ~30 seconds at normal speed (22.4 fps)
                
     async def on_start(self) -> None:
         """Initialize managers and load tactic modules"""
@@ -125,6 +126,15 @@ class ManifestorBot(AresBot):
         # Register unit abilities
         register_worker_abilities()
         register_construction_abilities()
+
+        # Set workers per gas saturation
+        self.mediator.set_workers_per_gas(amount=3)
+
+        # Set opening
+        opening = self.current_strategy.profile().opening
+        self.build_order_runner.switch_opening(opening)
+        log.info("Opening selected: %s (strategy: %s)", opening, self.current_strategy.value)
+
         log.info("Ability registry:\n%s", ability_registry.summary())
     
         log.game_event("GAME_START", f"Strategy: {self.current_strategy.value}", frame=0)
@@ -320,6 +330,7 @@ class ManifestorBot(AresBot):
         
         status_parts = [
             f"[{self.current_strategy.value}]",
+            f"Phase:{h.game_phase:.2f}",
             f"Mom:{h.momentum:.1f}",
             f"ArmyVal:{h.army_value_ratio:.2f}",
             f"Agg:{h.aggression_dial:.0f}",
@@ -377,12 +388,11 @@ class ManifestorBot(AresBot):
 
         """
         success = ability_selector.select_and_execute(unit, idea, self)
-
-        if success and idea.confidence > 0.7 and self.commentary_enabled:
-           await self._chat(
-               f"{unit.type_id.name[:4]}-{unit.tag % 1000}: "
-               f"{idea.tactic_module.name} ({idea.confidence:.2f})"
-           )
+        if success and self.unit_commentary_enabled and idea.confidence > 0.85:
+            await self._chat(
+                f"{unit.type_id.name[:4]}-{unit.tag % 1000}: "
+                f"{idea.tactic_module.name} ({idea.confidence:.2f})"
+            )
         
     def change_strategy(self, new_strategy: Strategy, reason: str = "") -> None:
         """

@@ -36,6 +36,24 @@ if TYPE_CHECKING:
     from ManifestorBot.manifests.heuristics import HeuristicState
     from ManifestorBot.manifests.strategy import Strategy
     from sc2.unit import Unit
+
+# Supply cost for each trainable unit type.
+# Zerg units cost 1 supply except where noted.
+SUPPLY_COST: dict[UnitID, int] = {
+    UnitID.QUEEN:        2,
+    UnitID.ZERGLING:     1,  # but spawns 2 per egg — handled naturally by amount
+    UnitID.ROACH:        2,
+    UnitID.RAVAGER:      3,
+    UnitID.HYDRALISK:    2,
+    UnitID.LURKERMP:     3,
+    UnitID.MUTALISK:     2,
+    UnitID.CORRUPTOR:    2,
+    UnitID.BROODLORD:    4,
+    UnitID.ULTRALISK:    6,
+    UnitID.INFESTOR:     2,
+    UnitID.VIPER:        3,
+    UnitID.SWARMHOSTMP:  3,
+}
     
 
 
@@ -249,25 +267,39 @@ class ZergArmyProductionTactic(BuildingTacticModule):
     def execute(self, building: "Unit", idea: BuildingIdea, bot: "ManifestorBot") -> bool:
         return self._execute_train(building, idea, bot)
 
-    def _pick_unit(self, building: "Unit", bot: "ManifestorBot") -> Optional[UnitID]:
+    def _pick_unit(self, building, bot) -> Optional[UnitID]:
+        target = bot.current_strategy.profile().active_composition(
+            bot.heuristic_manager.get_state().game_phase
+        )
+        if not target:
+            return None
         
-        """
-        Walk the priority list and return the first unit type that:
-          - Can be produced from this building type
-          - We can afford right now
-          - We have the tech prerequisite for (tech_requirement check)
-        """
-        for unit_type, struct_type in _ARMY_PRIORITY:
-            if building.type_id != struct_type:
-                continue
+        # Find which unit type we're furthest below target ratio
+        total_army_supply = sum(
+            bot.units(uid).amount * SUPPLY_COST[uid]
+            for uid in target.ratios
+        )
+        
+        best_unit = None
+        biggest_deficit = -999
+        
+        for unit_type, desired_ratio in target.ratios.items():
             if not self._can_afford_train(unit_type, bot):
                 continue
-            # Quick tech check via bot.tech_requirement_progress
-            req = bot.tech_requirement_progress(unit_type)
-            if req < 1.0:
+            if bot.tech_requirement_progress(unit_type) < 1.0:
                 continue
-            return unit_type
-        return None
+            
+            current_supply = bot.units(unit_type).amount * SUPPLY_COST.get(unit_type, 1)
+            current_ratio = current_supply / max(1, total_army_supply)
+            deficit = desired_ratio - current_ratio
+            
+            if deficit > biggest_deficit:
+                biggest_deficit = deficit
+                best_unit = unit_type
+        
+        # Counterplay bonus can still override if it pushes a unit's effective priority high enough
+        # (handled upstream in generate_idea, not here)
+        return best_unit
 
 
 # ---------------------------------------------------------------------------
@@ -515,11 +547,7 @@ class ZergStructureBuildTactic(BuildingTacticModule):
             return False
         if not self._building_is_ready(building):
             return False
-        # Don't queue construction if one is already pending of the same type
-        # (checked inside enqueue, but fast-fail here to avoid scoring)
-        if not bot.construction_queue:
-            return False
-        return True
+        return True  # generate_idea handles all the dedup logic
 
     def generate_idea(self, building, bot, heuristics, current_strategy, counter_ctx):
         # Walk structure priority list; find the first buildable, not-yet-built structure

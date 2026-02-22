@@ -222,6 +222,7 @@ class MorphTracker:
         This happens when a drone is attacked while traveling to the build site
         and retreats, or when the player (or another system) cancels the order.
         """
+        _GRACE_FRAMES = 15  # allow Ares time to issue the command
         current_unit_tags: Set[int] = {u.tag for u in bot.units}
 
         for order in queue.active():
@@ -231,6 +232,10 @@ class MorphTracker:
                 continue
             if order.claimed_by not in current_unit_tags:
                 continue  # handled by _detect_morph_starts as disappeared
+
+            #Don't check until the drone has had time to receive the command
+            if order.dispatched_frame and (frame - order.dispatched_frame) < _GRACE_FRAMES:
+                continue
 
             # Drone is still alive — check if it still has a build order
             drone = bot.units.find_by_tag(order.claimed_by)
