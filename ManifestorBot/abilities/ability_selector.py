@@ -123,6 +123,7 @@ class AbilitySelector:
             target_position=idea.target if not hasattr(idea.target, "tag") else None,
             confidence=idea.confidence,
             evidence=idea.evidence,
+            
         )
 
     def _legacy_execute(
@@ -160,6 +161,9 @@ _TACTIC_TO_GOAL: dict[str, str] = {
     "RallyToArmyTactic":      "rally",
     "CitizensArrestTactic":   "attack",
     "MiningTactic":           "mine",
+    "QueenInjectTactic":      "inject",
+    "QueenCreepSpreadTactic": "spread_creep",
+    "TumorSpreadTactic":      "spread_creep",
 }
 
 

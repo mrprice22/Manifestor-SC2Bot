@@ -37,6 +37,13 @@ from ManifestorBot.manifests.tactics.building_tactics import (
     ZergUpgradeResearchTactic,
     ZergRallyTactic,
     ZergStructureBuildTactic, 
+    ZergOverlordProductionTactic,
+    ZergQueenProductionTactic,
+)
+from ManifestorBot.manifests.tactics.queen_tactics import (
+    QueenInjectTactic,
+    QueenCreepSpreadTactic,
+    TumorSpreadTactic,
 )
 from ManifestorBot.abilities.ability_registry import ability_registry
 from ManifestorBot.abilities.ability_selector import ability_selector
@@ -242,6 +249,9 @@ class ManifestorBot(AresBot):
                 if unit_role in {UnitRole.BUILDING, UnitRole.GATHERING}:
                     continue
                 all_candidate_units.append(unit)
+
+        for tumor in self.structures(UnitID.CREEPTUMORBURROWED):
+            all_candidate_units.append(tumor)
 
         for worker in self.workers:
             unit_role = self._get_unit_role(worker.tag)
@@ -474,6 +484,9 @@ class ManifestorBot(AresBot):
             RallyToArmyTactic(),
             KeepUnitSafeTactic(),
             OverlordBorderTactic(),
+            QueenInjectTactic(),
+            QueenCreepSpreadTactic(),
+            TumorSpreadTactic(),
         ]
 
         log.info(
@@ -520,6 +533,8 @@ class ManifestorBot(AresBot):
             ZergArmyProductionTactic(),    # Army when strategy pushes for it
             ZergUpgradeResearchTactic(),   # Upgrades when affordable
             ZergStructureBuildTactic(),    # Build structures when needed
+            ZergOverlordProductionTactic(),# Train Overlords when supply is running short
+            ZergQueenProductionTactic(),   # Train Queens when supply is running short
         ]
 
         log.info(
@@ -529,6 +544,7 @@ class ManifestorBot(AresBot):
 
 
     # ---- E2: Main building idea loop ----
+# ---- E2: Main building idea loop ----
 
     async def _generate_building_ideas(self) -> None:
         """
@@ -551,14 +567,54 @@ class ManifestorBot(AresBot):
             return
 
         for structure in self.structures:
-            # Collect all passing ideas for this structure
-            ideas: list[tuple[BuildingTacticModule, BuildingIdea]] = []
-            counter_ctx = self.scout_ledger.get_counter_context(self.state.game_loop)
+            try:
+                self._process_building_ideas_for(structure)
+                # NOTE: async commentary call moved out — see below.
+                # (If you need the chat call, wrap only that part below.)
+            except Exception as exc:
+                log.exception(
+                    "_generate_building_ideas: unhandled exception for structure "
+                    "tag=%d type=%s — skipping this structure this tick. Error: %s",
+                    structure.tag,
+                    structure.type_id.name,
+                    exc,
+                    frame=self.state.game_loop,
+                )
 
-            for module in self.building_modules:
-                if not module.is_applicable(structure, self):
-                    continue
+        # Re-run for commentary (async calls cannot live in a non-async helper)
+        if self.commentary_enabled:
+            await self._emit_building_commentary()
 
+    def _process_building_ideas_for(self, structure) -> None:
+        """
+        Synchronous core of the building ideas loop for a single structure.
+
+        Separated so it can be wrapped in a try/except without losing async
+        context on the happy path.
+        """
+        ideas: list[tuple["BuildingTacticModule", "BuildingIdea"]] = []
+        counter_ctx = self.scout_ledger.get_counter_context(self.state.game_loop)
+
+        for module in self.building_modules:
+            applicable = False
+            try:
+                applicable = module.is_applicable(structure, self)
+            except Exception as exc:
+                log.exception(
+                    "_generate_building_ideas: %s.is_applicable raised for %s tag=%d: %s",
+                    module.name,
+                    structure.type_id.name,
+                    structure.tag,
+                    exc,
+                    frame=self.state.game_loop,
+                )
+                continue  # treat as not applicable
+
+            if not applicable:
+                continue
+
+            idea = None
+            try:
                 idea = module.generate_idea(
                     building=structure,
                     bot=self,
@@ -566,49 +622,107 @@ class ManifestorBot(AresBot):
                     current_strategy=self.current_strategy,
                     counter_ctx=counter_ctx,
                 )
-
-                if idea is None:
-                    continue
-
-                ideas.append((module, idea))
-
-            if not ideas:
-                continue
-
-            # Sort by confidence — highest first
-            ideas.sort(key=lambda x: x[1].confidence, reverse=True)
-            best_module, best_idea = ideas[0]
-
-            # Suppression check (shared clock with unit ideas)
-            if self._should_suppress_building_idea(structure, best_idea):
-                log.debug(
-                    "Building idea suppressed: %s for %s (conf=%.2f)",
-                    best_module.name,
+            except Exception as exc:
+                log.exception(
+                    "_generate_building_ideas: %s.generate_idea raised for %s tag=%d: %s",
+                    module.name,
                     structure.type_id.name,
-                    best_idea.confidence,
+                    structure.tag,
+                    exc,
                     frame=self.state.game_loop,
                 )
+                continue  # skip this module
+
+            if idea is None:
                 continue
 
-            # Execute
+            ideas.append((module, idea))
+
+        if not ideas:
+            return
+
+        # Sort by confidence — highest first
+        ideas.sort(key=lambda x: x[1].confidence, reverse=True)
+        best_module, best_idea = ideas[0]
+
+        # Log the full candidate list for Hatcheries so the confidence race is visible
+        if structure.type_id in {
+            UnitID.HATCHERY, UnitID.LAIR, UnitID.HIVE
+        } and len(ideas) > 1:
+            shortlist = ", ".join(
+                f"{m.name}({i.confidence:.2f})"
+                for m, i in ideas
+            )
+            log.debug(
+                "_generate_building_ideas: %s tag=%d candidates=[%s] → winner=%s(%.2f)",
+                structure.type_id.name,
+                structure.tag,
+                shortlist,
+                best_module.name,
+                best_idea.confidence,
+                frame=self.state.game_loop,
+            )
+
+        # Suppression check (shared clock with unit ideas)
+        if self._should_suppress_building_idea(structure, best_idea):
+            log.debug(
+                "Building idea suppressed: %s for %s tag=%d (conf=%.2f)",
+                best_module.name,
+                structure.type_id.name,
+                structure.tag,
+                best_idea.confidence,
+                frame=self.state.game_loop,
+            )
+            return
+
+        # Execute
+        success = False
+        try:
             success = best_module.execute(structure, best_idea, self)
+        except Exception as exc:
+            log.exception(
+                "_generate_building_ideas: %s.execute raised for %s tag=%d: %s",
+                best_module.name,
+                structure.type_id.name,
+                structure.tag,
+                exc,
+                frame=self.state.game_loop,
+            )
+            return
 
-            if success:
-                # Stamp cooldown so this building isn't spammed next tick
-                self.suppressed_ideas[structure.tag] = self.state.game_loop
+        if success:
+            # Stamp cooldown so this building isn't spammed next tick
+            self.suppressed_ideas[structure.tag] = self.state.game_loop
 
-                log.tactic(
-                    best_module.name,
-                    unit_tag=structure.tag,
-                    confidence=best_idea.confidence,
-                    frame=self.state.game_loop,
-                )
+            log.tactic(
+                best_module.name,
+                unit_tag=structure.tag,
+                confidence=best_idea.confidence,
+                frame=self.state.game_loop,
+            )
 
-                # Commentary for notable decisions
-                if best_idea.confidence > 0.7 and self.commentary_enabled:
-                    action_str = _building_idea_summary(best_idea, structure)
-                    await self._chat(action_str)
+            # Store for async commentary — emitted in _emit_building_commentary()
+            if not hasattr(self, "_pending_building_commentary"):
+                self._pending_building_commentary = []
+            self._pending_building_commentary.append((structure, best_idea))
+        else:
+            log.debug(
+                "_generate_building_ideas: %s.execute returned False for %s tag=%d (conf=%.2f)",
+                best_module.name,
+                structure.type_id.name,
+                structure.tag,
+                best_idea.confidence,
+                frame=self.state.game_loop,
+            )
 
+    async def _emit_building_commentary(self) -> None:
+        """Send chat commentary for notable building decisions this tick."""
+        pending = getattr(self, "_pending_building_commentary", [])
+        self._pending_building_commentary = []
+        for structure, idea in pending:
+            if idea.confidence > 0.7:
+                action_str = _building_idea_summary(idea, structure)
+                await self._chat(action_str)
 
     # ---- E3: Building suppression check ----
 

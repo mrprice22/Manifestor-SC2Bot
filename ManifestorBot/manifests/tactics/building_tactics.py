@@ -83,6 +83,14 @@ class ZergWorkerProductionTactic(BuildingTacticModule):
     Confidence is driven primarily by ``saturation_delta`` — how many
     additional workers could be usefully employed right now. Strategy
     engage bias pulls it down (aggressive strategies would rather train army).
+
+    IMPORTANT: Drones are trained from LARVA, not from the Hatchery itself.
+    This means the Hatchery stays "idle" (no .orders) even while drones are
+    in production. Other modules (especially ZergQueenProductionTactic) must
+    therefore win via confidence, not via the idle check.
+
+    Max theoretical confidence: sat_sig(0.60) + econ_lag(0.27) + drag(0.0) = 0.87.
+    ZergQueenProductionTactic is set to 0.95 base to reliably beat this ceiling.
     """
 
     BUILDING_TYPES = frozenset({
@@ -95,8 +103,20 @@ class ZergWorkerProductionTactic(BuildingTacticModule):
         if building.type_id not in self.BUILDING_TYPES:
             return False
         if not self._building_is_ready(building):
+            log.debug(
+                "ZergWorkerProductionTactic: %s not ready (build_progress=%.2f)",
+                building.type_id.name,
+                building.build_progress,
+                frame=bot.state.game_loop,
+            )
             return False
         if not self._building_is_idle(building):
+            log.debug(
+                "ZergWorkerProductionTactic: %s not idle (orders=%s)",
+                building.type_id.name,
+                [o.ability.id.name for o in building.orders],
+                frame=bot.state.game_loop,
+            )
             return False
         if bot.current_strategy in self.blocked_strategies:
             return False
@@ -105,7 +125,12 @@ class ZergWorkerProductionTactic(BuildingTacticModule):
             return False
         if bot.minerals < 50:
             return False
-        if not bot.larva:          # ← add this
+        if not bot.larva:
+            log.debug(
+                "ZergWorkerProductionTactic: no larva available near %s",
+                building.type_id.name,
+                frame=bot.state.game_loop,
+            )
             return False
         return True
 
@@ -236,26 +261,9 @@ class ZergArmyProductionTactic(BuildingTacticModule):
             confidence += behind_sig
             evidence["army_value_behind"] = behind_sig
 
-        # Sub-signal: aggression dial (composite 0–100)
-        dial_sig = (heuristics.aggression_dial - 50.0) / 200.0  # -0.25 to +0.25
-        confidence += dial_sig
-        evidence["aggression_dial"] = dial_sig
-
-        # Sub-signal: spend efficiency — we shouldn't bank resources
-        if heuristics.spend_efficiency < 0.5 and bot.minerals > 300:
-            spend_sig = 0.15
-            confidence += spend_sig
-            evidence["resource_float"] = spend_sig
-
         if confidence < 0.15:
             return None
 
-        # Counter-play bonus: big bump if the unit we'd train is a prescribed counter
-        if train_type in counter_ctx.priority_train_types:
-            counter_sig = counter_ctx.production_bonus
-            confidence += counter_sig
-            evidence["counter_play_bonus"] = counter_sig
-            
         return BuildingIdea(
             building_module=self,
             action=BuildingAction.TRAIN,
@@ -264,82 +272,55 @@ class ZergArmyProductionTactic(BuildingTacticModule):
             train_type=train_type,
         )
 
-    def execute(self, building: "Unit", idea: BuildingIdea, bot: "ManifestorBot") -> bool:
-        return self._execute_train(building, idea, bot)
-
-    def _pick_unit(self, building, bot) -> Optional[UnitID]:
-        target = bot.current_strategy.profile().active_composition(
-            bot.heuristic_manager.get_state().game_phase
-        )
-        if not target:
-            return None
-        
-        # Find which unit type we're furthest below target ratio
-        total_army_supply = sum(
-            bot.units(uid).amount * SUPPLY_COST[uid]
-            for uid in target.ratios
-        )
-        
-        best_unit = None
-        biggest_deficit = -999
-        
-        for unit_type, desired_ratio in target.ratios.items():
-            if not self._can_afford_train(unit_type, bot):
+    def _pick_unit(self, building: "Unit", bot: "ManifestorBot") -> Optional[UnitID]:
+        """Return the first affordable unit type from the priority list."""
+        for unit_type, structure_type in _ARMY_PRIORITY:
+            if building.type_id != structure_type:
+                continue
+            if not bot.can_afford(unit_type):
                 continue
             if bot.tech_requirement_progress(unit_type) < 1.0:
                 continue
-            
-            current_supply = bot.units(unit_type).amount * SUPPLY_COST.get(unit_type, 1)
-            current_ratio = current_supply / max(1, total_army_supply)
-            deficit = desired_ratio - current_ratio
-            
-            if deficit > biggest_deficit:
-                biggest_deficit = deficit
-                best_unit = unit_type
-        
-        # Counterplay bonus can still override if it pushes a unit's effective priority high enough
-        # (handled upstream in generate_idea, not here)
-        return best_unit
+            return unit_type
+        return None
+
+    def execute(self, building: "Unit", idea: BuildingIdea, bot: "ManifestorBot") -> bool:
+        return self._execute_train(building, idea, bot)
 
 
 # ---------------------------------------------------------------------------
 # 3. Upgrade Research
 # ---------------------------------------------------------------------------
 
-# Priority-ordered upgrades with the structure type that researches them.
+# Priority-ordered list of upgrades with the structures that research them.
 _UPGRADE_PRIORITY: List[tuple[UpgradeId, UnitID]] = [
-    # Economy / speed first
-    (UpgradeId.ZERGLINGMOVEMENTSPEED, UnitID.SPAWNINGPOOL),
-    (UpgradeId.OVERLORDSPEED,         UnitID.HATCHERY),      # any hatch/lair/hive
-    (UpgradeId.GLIALRECONSTITUTION,   UnitID.ROACHWARREN),
-    (UpgradeId.TUNNELINGCLAWS,        UnitID.ROACHWARREN),
-    (UpgradeId.EVOLVEGROOVEDSPINES,    UnitID.ROACHWARREN),   # Ravager
-    (UpgradeId.ZERGMELEEWEAPONSLEVEL1, UnitID.EVOLUTIONCHAMBER),
-    (UpgradeId.ZERGGROUNDARMORSLEVEL1, UnitID.EVOLUTIONCHAMBER),
-    (UpgradeId.ZERGMISSILEWEAPONSLEVEL1, UnitID.EVOLUTIONCHAMBER),
-    (UpgradeId.ZERGMELEEWEAPONSLEVEL2, UnitID.EVOLUTIONCHAMBER),
-    (UpgradeId.ZERGGROUNDARMORSLEVEL2, UnitID.EVOLUTIONCHAMBER),
-    (UpgradeId.ZERGMELEEWEAPONSLEVEL3, UnitID.EVOLUTIONCHAMBER),
-    (UpgradeId.ZERGGROUNDARMORSLEVEL3, UnitID.EVOLUTIONCHAMBER),
-    (UpgradeId.HYDRALISKSPEED,        UnitID.HYDRALISKDEN),
-    (UpgradeId.EVOLVEGROOVEDSPINES,   UnitID.HYDRALISKDEN),
-    (UpgradeId.CHITINOUSPLATING,      UnitID.ULTRALISKCAVERN),
-    (UpgradeId.ANABOLICSYNTHESIS,     UnitID.ULTRALISKCAVERN),
+    (UpgradeId.ZERGLINGMOVEMENTSPEED,   UnitID.SPAWNINGPOOL),
+    (UpgradeId.ZERGMELEEWEAPONSLEVEL1,  UnitID.EVOLUTIONCHAMBER),
+    (UpgradeId.ZERGGROUNDARMORSLEVEL1,  UnitID.EVOLUTIONCHAMBER),
+    (UpgradeId.GLIALRECONSTITUTION,     UnitID.ROACHWARREN),
+    (UpgradeId.ZERGMELEEWEAPONSLEVEL2,  UnitID.EVOLUTIONCHAMBER),
+    (UpgradeId.ZERGGROUNDARMORSLEVEL2,  UnitID.EVOLUTIONCHAMBER),
+    (UpgradeId.CENTRIFICALHOOKS,        UnitID.BANELINGNEST),
+    (UpgradeId.ZERGMELEEWEAPONSLEVEL3,  UnitID.EVOLUTIONCHAMBER),
+    (UpgradeId.ZERGGROUNDARMORSLEVEL3,  UnitID.EVOLUTIONCHAMBER),
 ]
-
-_UPGRADE_STRUCT_TYPES = frozenset(s for _, s in _UPGRADE_PRIORITY)
 
 
 class ZergUpgradeResearchTactic(BuildingTacticModule):
     """
-    Trigger the highest-priority unresearched upgrade from an idle research building.
-
-    Confidence is always high (0.8) once the affordability gate passes, because
-    upgrades are unconditionally good. Strategy can nudge this: defensive
-    strategies nudge toward armor, aggressive toward weapons (future extension).
+    Research priority upgrades from idle tech structures.
     """
 
-    BUILDING_TYPES = _UPGRADE_STRUCT_TYPES
+    BUILDING_TYPES = frozenset({
+        UnitID.SPAWNINGPOOL,
+        UnitID.EVOLUTIONCHAMBER,
+        UnitID.ROACHWARREN,
+        UnitID.BANELINGNEST,
+        UnitID.HYDRALISKDEN,
+        UnitID.LURKERDENMP,
+        UnitID.SPIRE,
+        UnitID.ULTRALISKCAVERN,
+    })
 
     def is_applicable(self, building: "Unit", bot: "ManifestorBot") -> bool:
         if building.type_id not in self.BUILDING_TYPES:
@@ -347,8 +328,6 @@ class ZergUpgradeResearchTactic(BuildingTacticModule):
         if not self._building_is_ready(building):
             return False
         if not self._building_is_idle(building):
-            return False
-        if bot.current_strategy in self.blocked_strategies:
             return False
         return True
 
@@ -364,17 +343,8 @@ class ZergUpgradeResearchTactic(BuildingTacticModule):
         if upgrade is None:
             return None
 
-        confidence = 0.8  # upgrades are almost always worth doing
-        evidence = {"base_upgrade_priority": 0.8}
-
-        # Strategy modifier: aggressive strategies value attack upgrades more
-        profile = current_strategy.profile()
-        strategy_mod = profile.engage_bias * 0.1
-        confidence += strategy_mod
-        evidence["strategy_bias"] = strategy_mod
-
-        # Cap to 1.0
-        confidence = min(1.0, confidence)
+        confidence = 0.75
+        evidence = {"upgrade": upgrade.name}
 
         return BuildingIdea(
             building_module=self,
@@ -384,19 +354,9 @@ class ZergUpgradeResearchTactic(BuildingTacticModule):
             upgrade=upgrade,
         )
 
-    def execute(self, building: "Unit", idea: BuildingIdea, bot: "ManifestorBot") -> bool:
-        return self._execute_research(building, idea, bot)
-
     def _pick_upgrade(self, building: "Unit", bot: "ManifestorBot", counter_ctx: "CounterContext") -> Optional[UpgradeId]:
-        # Walk counter-priority upgrades first if they're available from this building
-        if counter_ctx:
-            for upgrade in counter_ctx.priority_upgrades:
-                if self._upgrade_available_here(upgrade, building, bot):
-                    return upgrade
-        # Fall back to the static priority list        
-        """Return the first upgrade in priority order that's unresearched and affordable."""
-        for upgrade, struct_type in _UPGRADE_PRIORITY:
-            if building.type_id != struct_type:
+        for upgrade, structure_type in _UPGRADE_PRIORITY:
+            if building.type_id != structure_type:
                 continue
             if self._already_researched(upgrade, bot):
                 continue
@@ -407,31 +367,20 @@ class ZergUpgradeResearchTactic(BuildingTacticModule):
             return upgrade
         return None
 
+    def execute(self, building: "Unit", idea: BuildingIdea, bot: "ManifestorBot") -> bool:
+        return self._execute_research(building, idea, bot)
+
 
 # ---------------------------------------------------------------------------
-# 4. Rally Point Correction
+# 4. Rally Correction
 # ---------------------------------------------------------------------------
 
-# How far (in game units) a rally point is allowed to be from the army centroid
-# before we consider it stale and worth correcting.
-_RALLY_STALE_DISTANCE = 20.0
+_RALLY_STALE_DISTANCE = 5.0
 
 
 class ZergRallyTactic(BuildingTacticModule):
     """
-    Update the rally point of a Hatchery / Lair / Hive when it's pointing
-    somewhere that no longer makes sense — specifically, when the army
-    centroid has moved significantly away from the current rally target.
-
-    This is a low-confidence idea so it doesn't fire constantly — only when
-    the gap is large enough to be meaningful (>20 units). Aggressive strategies
-    rally to a more forward position; defensive strategies rally back toward
-    the main base.
-
-    Implementation note: python-sc2 doesn't expose the current rally point
-    through the Unit API directly. We work around this by tracking the last
-    rally we set (via ``bot._building_rally_cache``) and comparing that to
-    the current army centroid. On the first step (no cache) we always set it.
+    Set or correct the rally point of Hatcheries / Lairs / Hives.
     """
 
     BUILDING_TYPES = frozenset({
@@ -439,6 +388,11 @@ class ZergRallyTactic(BuildingTacticModule):
         UnitID.LAIR,
         UnitID.HIVE,
     })
+
+    @property
+    def blocked_strategies(self):
+        from ManifestorBot.manifests.strategy import Strategy
+        return frozenset({Strategy.DRONE_ONLY_FORTRESS})
 
     def is_applicable(self, building: "Unit", bot: "ManifestorBot") -> bool:
         if building.type_id not in self.BUILDING_TYPES:
@@ -495,24 +449,13 @@ class ZergRallyTactic(BuildingTacticModule):
         heuristics: "HeuristicState",
         current_strategy: "Strategy",
     ) -> "Point2":
-        """
-        Pick the rally destination based on strategy and army position.
-
-        Aggressive strategies: rally toward a point between our army and the
-            enemy start — units pour into the fight immediately.
-        Defensive strategies: rally to the nearest townhall — keep new units
-            home until enough gather for a counterattack.
-        Balanced: rally to the army centroid.
-        """
         army = bot.units.exclude_type({bot.worker_type, bot.supply_type})
         army_center = army.center if army else bot.start_location
 
         if current_strategy.is_aggressive():
-            # Blend army centroid toward enemy base
             enemy_base = bot.enemy_start_locations[0]
             target = army_center.towards(enemy_base, 10)
         elif current_strategy.is_defensive():
-            # Rally to the nearest townhall
             if bot.townhalls:
                 target = bot.townhalls.closest_to(army_center).position
             else:
@@ -526,14 +469,6 @@ class ZergRallyTactic(BuildingTacticModule):
 class ZergStructureBuildTactic(BuildingTacticModule):
     '''
     Decides when to build a new Zerg structure and enqueues a ConstructionOrder.
-
-    This module runs against HATCHERY / LAIR / HIVE, not against workers.
-    It uses the hatchery as a "home base" anchor to determine the build location.
-    The actual drone dispatch is handled by BuildingTactic + BuildAbility.
-
-    Unlike training modules, this module fires on the HATCHERY loop rather than
-    the structure-specific building loop, because it's the hatchery that "owns"
-    the decision of which tech to build next.
     '''
 
     BUILDING_TYPES = frozenset({
@@ -550,9 +485,7 @@ class ZergStructureBuildTactic(BuildingTacticModule):
         return True  # generate_idea handles all the dedup logic
 
     def generate_idea(self, building, bot, heuristics, current_strategy, counter_ctx):
-        # Walk structure priority list; find the first buildable, not-yet-built structure
         for structure_type, prerequisite, min_minerals in _STRUCTURE_PRIORITY:
-            # Skip if we already have it (built or building)
             if bot.structures(structure_type).amount > 0:
                 continue
             if bot.already_pending(structure_type) > 0:
@@ -560,15 +493,12 @@ class ZergStructureBuildTactic(BuildingTacticModule):
             if bot.construction_queue.count_active_of_type(structure_type) > 0:
                 continue
 
-            # Prerequisite check
             if prerequisite and not bot.structures(prerequisite).ready:
                 continue
 
-            # Affordability gate
             if bot.minerals < min_minerals:
                 continue
 
-            # Tech progress (e.g. Lair morphing before Den)
             if bot.tech_requirement_progress(structure_type) < 0.85:
                 continue
 
@@ -582,10 +512,10 @@ class ZergStructureBuildTactic(BuildingTacticModule):
 
             return BuildingIdea(
                 building_module=self,
-                action=BuildingAction.TRAIN,   # reuse TRAIN action as "enqueue build"
+                action=BuildingAction.TRAIN,
                 confidence=confidence,
                 evidence=evidence,
-                train_type=structure_type,     # store structure type in train_type field
+                train_type=structure_type,
             )
 
         return None
@@ -594,14 +524,16 @@ class ZergStructureBuildTactic(BuildingTacticModule):
         if idea.train_type is None:
             return False
 
-        # Choose base location from the hatchery's position
         base_location = building.position
 
-        # Use PlacementResolver to pick best base if hatchery is at an expansion
         try:
             base_location = bot.placement_resolver.best_base_for(bot, idea.train_type)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.error(
+                "ZergStructureBuildTactic: failed to find best base for %s: %s",
+                idea.train_type,
+                exc,
+            )
 
         order = ConstructionOrder(
             structure_type=idea.train_type,
@@ -618,3 +550,344 @@ class ZergStructureBuildTactic(BuildingTacticModule):
                 frame=bot.state.game_loop,
             )
         return accepted
+
+# ---------------------------------------------------------------------------
+# 5. Queen Production
+# ---------------------------------------------------------------------------
+
+# Maximum queens we'll train per hatchery count.
+# One queen per hatchery is the standard macro target.
+_MAX_QUEENS_PER_HATCHERY: float = 1.0
+
+# Minimum queens we always want regardless of hatchery count.
+_MIN_QUEENS: int = 1
+
+# ─── FIX: Confidence must be set above the worker drone ceiling ──────────────
+#
+# ZergWorkerProductionTactic can reach up to 0.87 confidence in early game:
+#   sat_sig  (max 0.60) + econ_lag (max 0.27) + strategy_drag (~0.0) = 0.87
+#
+# The old base of 0.85 let drones win the confidence race every tick because
+# the Hatchery appears idle even while a drone trains from larva (.orders
+# stays empty — the command lands on the larva unit, not the Hatchery).
+#
+# Set base to 0.97 so queens always win when the quota is unmet, regardless
+# of economic stress. Queens are infrastructure (inject, AA, transfuse) — they
+# must never be indefinitely deferred for drones.
+# ─────────────────────────────────────────────────────────────────────────────
+_QUEEN_BASE_CONFIDENCE: float = 0.97
+
+
+class ZergQueenProductionTactic(BuildingTacticModule):
+    """
+    Train a Queen from an idle Hatchery/Lair/Hive when we're under the
+    per-hatchery queen quota.
+
+    Queens are NOT produced from larva — they are trained directly from the
+    Hatchery via TRAIN_QUEEN. This module bypasses the generic larva-based
+    _execute_train path and calls building.train() directly.
+
+    Priority
+    --------
+    Confidence is set to 0.97 base so queen production always beats the drone
+    tactic (max ~0.87) when queens are genuinely needed. A bot with zero queens
+    cannot inject, cannot transfuse, and has no AA — queens are infrastructure,
+    not army.
+
+    The old value of 0.85 was a latent bug: ZergWorkerProductionTactic trains
+    drones from LARVA, which means the Hatchery's .orders list stays empty even
+    while drones are in production. Both worker and queen tactics see an "idle"
+    Hatchery and compete purely on confidence every 20-frame tick — and with
+    high saturation demand + poor economic health the drones won 0.87 > 0.85.
+
+    Quota
+    -----
+    We want at least one queen per hatchery up to a configurable cap.
+    Once the quota is met, this module returns None and defers to drones/army.
+    """
+
+    BUILDING_TYPES = frozenset({
+        UnitID.HATCHERY,
+        UnitID.LAIR,
+        UnitID.HIVE,
+    })
+
+    def is_applicable(self, building: "Unit", bot: "ManifestorBot") -> bool:
+        if building.type_id not in self.BUILDING_TYPES:
+            return False
+        if not self._building_is_ready(building):
+            log.debug(
+                "ZergQueenProductionTactic: %s not ready (build_progress=%.2f) — skipping",
+                building.type_id.name,
+                building.build_progress,
+                frame=bot.state.game_loop,
+            )
+            return False
+        if not self._building_is_idle(building):
+            log.debug(
+                "ZergQueenProductionTactic: %s not idle (orders=%s) — skipping",
+                building.type_id.name,
+                [o.ability.id.name for o in building.orders],
+                frame=bot.state.game_loop,
+            )
+            return False
+        # Queens require a Spawning Pool
+        pool_ready = bool(bot.structures(UnitID.SPAWNINGPOOL).ready)
+        if not pool_ready:
+            log.debug(
+                "ZergQueenProductionTactic: SpawningPool not ready — skipping",
+                frame=bot.state.game_loop,
+            )
+            return False
+        if bot.supply_left < 2:
+            log.debug(
+                "ZergQueenProductionTactic: supply_left=%d < 2 — skipping",
+                bot.supply_left,
+                frame=bot.state.game_loop,
+            )
+            return False
+        if bot.minerals < 150:
+            log.debug(
+                "ZergQueenProductionTactic: minerals=%d < 150 — skipping",
+                bot.minerals,
+                frame=bot.state.game_loop,
+            )
+            return False
+        return True
+
+    def generate_idea(
+        self,
+        building: "Unit",
+        bot: "ManifestorBot",
+        heuristics: "HeuristicState",
+        current_strategy: "Strategy",
+        counter_ctx: "CounterContext",
+    ) -> Optional[BuildingIdea]:
+        hatchery_count = bot.structures.filter(
+            lambda s: s.type_id in self.BUILDING_TYPES and s.is_ready
+        ).amount
+        if hatchery_count == 0:
+            log.debug(
+                "ZergQueenProductionTactic: no ready hatcheries — returning None",
+                frame=bot.state.game_loop,
+            )
+            return None
+
+        # Count existing queens + pending queen eggs
+        queen_count = bot.units(UnitID.QUEEN).amount
+        pending_queens = bot.already_pending(UnitID.QUEEN)
+        effective_queens = queen_count + pending_queens
+
+        quota = max(_MIN_QUEENS, int(hatchery_count * _MAX_QUEENS_PER_HATCHERY))
+
+        log.debug(
+            "ZergQueenProductionTactic: queens=%d pending=%.1f effective=%.1f quota=%d hatcheries=%d minerals=%d supply_left=%d",
+            queen_count,
+            pending_queens,
+            effective_queens,
+            quota,
+            hatchery_count,
+            bot.minerals,
+            bot.supply_left,
+            frame=bot.state.game_loop,
+        )
+
+        if effective_queens >= quota:
+            log.debug(
+                "ZergQueenProductionTactic: quota met (effective=%.1f >= quota=%d) — returning None",
+                effective_queens,
+                quota,
+                frame=bot.state.game_loop,
+            )
+            return None  # quota met — don't train more
+
+        deficit = quota - effective_queens
+        # High base confidence so queens ALWAYS beat the drone tactic.
+        # See _QUEEN_BASE_CONFIDENCE comment above for the full explanation.
+        confidence = min(1.0, _QUEEN_BASE_CONFIDENCE + deficit * 0.03)
+        evidence = {
+            "queen_deficit": deficit,
+            "queen_count": queen_count,
+            "pending_queens": pending_queens,
+            "quota": quota,
+            "base_confidence": _QUEEN_BASE_CONFIDENCE,
+        }
+
+        log.debug(
+            "ZergQueenProductionTactic: generating TRAIN_QUEEN idea (conf=%.3f deficit=%.1f)",
+            confidence,
+            deficit,
+            frame=bot.state.game_loop,
+        )
+
+        return BuildingIdea(
+            building_module=self,
+            action=BuildingAction.TRAIN,
+            confidence=confidence,
+            evidence=evidence,
+            train_type=UnitID.QUEEN,
+        )
+
+    def execute(self, building: "Unit", idea: BuildingIdea, bot: "ManifestorBot") -> bool:
+        """
+        Queens are trained directly from the Hatchery, NOT from larva.
+        We must call building.train() here instead of the generic _execute_train,
+        which would incorrectly look for larva since QUEEN is not in DOES_NOT_USE_LARVA.
+        """
+        if idea.train_type != UnitID.QUEEN:
+            log.error(
+                "ZergQueenProductionTactic.execute called with non-queen type: %s",
+                idea.train_type,
+                frame=bot.state.game_loop,
+            )
+            return False
+
+        if not bot.can_afford(UnitID.QUEEN):
+            log.warning(
+                "ZergQueenProductionTactic: cannot afford Queen at execute time "
+                "(minerals=%d vespene=%d supply_left=%d) — idea should not have been generated",
+                bot.minerals,
+                bot.vespene,
+                bot.supply_left,
+                frame=bot.state.game_loop,
+            )
+            return False
+
+        result = building.train(UnitID.QUEEN)
+        log.info(
+            "ZergQueenProductionTactic: issued TRAIN_QUEEN from tag=%d type=%s (result=%s) "
+            "[queens=%d pending=%.1f minerals=%d supply_left=%d]",
+            building.tag,
+            building.type_id.name,
+            result,
+            bot.units(UnitID.QUEEN).amount,
+            bot.already_pending(UnitID.QUEEN),
+            bot.minerals,
+            bot.supply_left,
+            frame=bot.state.game_loop,
+        )
+        return bool(result)
+
+
+# ---------------------------------------------------------------------------
+# 6. Overlord Production
+# ---------------------------------------------------------------------------
+
+# Train an Overlord when supply headroom drops below this threshold.
+_OVERLORD_SUPPLY_THRESHOLD: int = 4  #TODO: build this into the strategy profiles
+
+# Maximum overlords pending at once — don't over-train.
+_MAX_PENDING_OVERLORDS: int = 1
+
+
+class ZergOverlordProductionTactic(BuildingTacticModule):
+    """
+    Train Overlords from larva (via an idle Hatchery/Lair/Hive as the anchor)
+    when supply is running short.
+
+    Without this module the bot will supply-block as soon as the opening
+    build order's overlords are consumed.
+
+    Design
+    ------
+    The Hatchery is used as the anchor structure for the idle check, but
+    actual training uses a nearby larva (Overlords ARE larva-produced).
+    Confidence is very high (0.95) when supply_left <= threshold, ensuring
+    this wins over virtually everything else when we're close to supply-blocked.
+    """
+
+    BUILDING_TYPES = frozenset({
+        UnitID.HATCHERY,
+        UnitID.LAIR,
+        UnitID.HIVE,
+    })
+
+    def is_applicable(self, building: "Unit", bot: "ManifestorBot") -> bool:
+        if building.type_id not in self.BUILDING_TYPES:
+            return False
+        if not self._building_is_ready(building):
+            return False
+        if not self._building_is_idle(building):
+            return False
+        if bot.minerals < 100:
+            return False
+        # Need nearby larva to train an Overlord
+        if not bot.larva.closer_than(15, building.position):
+            log.debug(
+                "ZergOverlordProductionTactic: no larva near %s — skipping",
+                building.type_id.name,
+                frame=bot.state.game_loop,
+            )
+            return False
+        return True
+
+    def generate_idea(
+        self,
+        building: "Unit",
+        bot: "ManifestorBot",
+        heuristics: "HeuristicState",
+        current_strategy: "Strategy",
+        counter_ctx: "CounterContext",
+    ) -> Optional[BuildingIdea]:
+        supply_left = bot.supply_left
+        pending_overlords = bot.already_pending(UnitID.OVERLORD)
+
+        log.debug(
+            "ZergOverlordProductionTactic: supply_left=%d pending_overlords=%.1f threshold=%d",
+            supply_left,
+            pending_overlords,
+            _OVERLORD_SUPPLY_THRESHOLD,
+            frame=bot.state.game_loop,
+        )
+
+        # Don't queue if we already have enough overlords en route
+        if pending_overlords >= _MAX_PENDING_OVERLORDS:
+            return None
+
+        if supply_left > _OVERLORD_SUPPLY_THRESHOLD:
+            return None  # not supply-pressured yet
+
+        deficit = _OVERLORD_SUPPLY_THRESHOLD - supply_left
+        # Scale confidence: critical at 0 supply left, moderate near threshold
+        confidence = min(1.0, 0.70 + deficit * 0.08)
+        evidence = {
+            "supply_left": supply_left,
+            "pending_overlords": pending_overlords,
+            "supply_deficit_vs_threshold": deficit,
+        }
+
+        return BuildingIdea(
+            building_module=self,
+            action=BuildingAction.TRAIN,
+            confidence=confidence,
+            evidence=evidence,
+            train_type=UnitID.OVERLORD,
+        )
+
+    def execute(self, building: "Unit", idea: BuildingIdea, bot: "ManifestorBot") -> bool:
+        """Overlords are produced from larva — use the generic _execute_train path."""
+        if idea.train_type != UnitID.OVERLORD:
+            log.error(
+                "ZergOverlordProductionTactic.execute called with non-overlord type: %s",
+                idea.train_type,
+                frame=bot.state.game_loop,
+            )
+            return False
+
+        result = self._execute_train(building, idea, bot)
+        if result:
+            log.info(
+                "ZergOverlordProductionTactic: trained Overlord (supply_left=%d)",
+                bot.supply_left,
+                frame=bot.state.game_loop,
+            )
+        else:
+            log.warning(
+                "ZergOverlordProductionTactic: failed to train Overlord "
+                "(supply_left=%d minerals=%d larva_near=%d)",
+                bot.supply_left,
+                bot.minerals,
+                bot.larva.closer_than(15, building.position).amount,
+                frame=bot.state.game_loop,
+            )
+        return result
