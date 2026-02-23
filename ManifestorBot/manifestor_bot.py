@@ -39,12 +39,14 @@ from ManifestorBot.manifests.tactics.building_tactics import (
     ZergStructureBuildTactic, 
     ZergOverlordProductionTactic,
     ZergQueenProductionTactic,
+    ZergGasWorkerTactic,
 )
 from ManifestorBot.manifests.tactics.queen_tactics import (
     QueenInjectTactic,
     QueenCreepSpreadTactic,
     TumorSpreadTactic,
 )
+
 from ManifestorBot.abilities.ability_registry import ability_registry
 from ManifestorBot.abilities.ability_selector import ability_selector
 from ManifestorBot.abilities.worker_abilities import (
@@ -529,12 +531,13 @@ class ManifestorBot(AresBot):
         """
         self.building_modules = [
             ZergRallyTactic(),             # Rally first — cheap and non-disruptive
-            ZergWorkerProductionTactic(),  # Workers before army by default
-            ZergArmyProductionTactic(),    # Army when strategy pushes for it
+            ZergQueenProductionTactic(),   # Queens before workers — they're infrastructure
+            ZergOverlordProductionTactic(),# Train Overlords when supply is running short
+            ZergArmyProductionTactic(),    # Army BEFORE workers — fix for eco-only behavior
+            ZergWorkerProductionTactic(),  # Workers after army is seeded
             ZergUpgradeResearchTactic(),   # Upgrades when affordable
             ZergStructureBuildTactic(),    # Build structures when needed
-            ZergOverlordProductionTactic(),# Train Overlords when supply is running short
-            ZergQueenProductionTactic(),   # Train Queens when supply is running short
+            ZergGasWorkerTactic(),         # Ensure gas workers are always assigned
         ]
 
         log.info(

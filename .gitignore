@@ -7,6 +7,10 @@ publish/
 # Repo dump file
 RepoDump.md
 
+#Log Folder
+logs/
+*.log
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -139,3 +143,5 @@ dmypy.json
 
 # Pycharm
 /.idea
+logs/manifestor_20260223_161725.log.1
+logs/manifestor_20260223_161725.log.2

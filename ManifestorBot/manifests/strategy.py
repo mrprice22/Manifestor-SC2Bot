@@ -363,9 +363,9 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
     # hive tech late. No mutas — solid predictable execution.
     # ─────────────────────────────────────────────────────────────────────────────
     Strategy.STOCK_STANDARD: TacticalProfile(
-        engage_bias   = 0.0,
-        retreat_bias  = 0.0,
-        harass_bias   = 0.0,
+        engage_bias   = 0.2,
+        retreat_bias  = 0.1,
+        harass_bias   = 0.2,
         cohesion_bias = 0.0,
         hold_bias     = 0.0,
         sacrifice_ok  = False,

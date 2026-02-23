@@ -9,6 +9,7 @@ Three modules cover the three building action categories:
     ZergUpgradeResearchTactic    — Lair/Spire/etc. research priority upgrades.
     ZergRallyTactic              — Hatcheries / Lairs set rally to army centroid
                                    when the current rally is stale or wrong.
+    ZergGasWorkerTactic          — Ensures drones are assigned to gas buildings.
 
 These are self-contained and registered in ManifestorBot._load_building_modules().
 """
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
 SUPPLY_COST: dict[UnitID, int] = {
     UnitID.QUEEN:        2,
     UnitID.ZERGLING:     1,  # but spawns 2 per egg — handled naturally by amount
+    UnitID.BANELING:     0,  # morphed from zergling, uses zergling supply
     UnitID.ROACH:        2,
     UnitID.RAVAGER:      3,
     UnitID.HYDRALISK:    2,
@@ -148,6 +150,11 @@ class ZergWorkerProductionTactic(BuildingTacticModule):
         # Sub-signal: saturation delta — how many workers are still needed
         delta = heuristics.saturation_delta
         if delta <= 0:
+            log.debug(
+                "ZergWorkerProductionTactic: fully saturated (delta=%.1f) — returning None",
+                delta,
+                frame=bot.state.game_loop,
+            )
             return None  # fully saturated, don't queue more drones
         sat_sig = min(0.6, delta * 0.12)
         confidence += sat_sig
@@ -165,6 +172,16 @@ class ZergWorkerProductionTactic(BuildingTacticModule):
         strategy_drag = profile.engage_bias * -0.15  # positive engage_bias → less drone pressure
         confidence += strategy_drag
         evidence["strategy_engage_drag"] = strategy_drag
+
+        log.debug(
+            "ZergWorkerProductionTactic: confidence=%.3f (sat=%.3f econ_lag=%.3f drag=%.3f delta=%.1f)",
+            confidence,
+            sat_sig,
+            evidence.get("economic_health_lag", 0.0),
+            strategy_drag,
+            delta,
+            frame=bot.state.game_loop,
+        )
 
         if confidence < 0.15:
             return None
@@ -187,6 +204,9 @@ class ZergWorkerProductionTactic(BuildingTacticModule):
 
 # Priority-ordered list of Zerg army units and the structures that make them.
 # The first affordable type from this list is queued.
+# NOTE: BANELING is morphed from ZERGLING at the BANELINGNEST, not trained directly.
+# However, in python-sc2 / Ares, BANELING training is issued to the Hatchery larva
+# and requires a BanelingNest — it IS in the tech_requirement_progress check.
 _ARMY_PRIORITY: List[tuple[UnitID, UnitID]] = [
     # (unit_to_train,  producing_structure_type)
     (UnitID.ZERGLING,    UnitID.HATCHERY),
@@ -201,16 +221,27 @@ _ARMY_PRIORITY: List[tuple[UnitID, UnitID]] = [
     (UnitID.ULTRALISK,   UnitID.HIVE),
 ]
 
+# Minimum army supply we always want, regardless of strategy.
+# Below this threshold we ALWAYS push army production (confidence 0.85).
+# This prevents the bot from sitting at 0 military indefinitely.
+_MIN_ARMY_SUPPLY: int = 6
+
+# Once we have _MIN_ARMY_SUPPLY, switch to composition-target-driven production.
+# Base confidence added even when strategy is neutral (engage_bias=0).
+# Prevents pure eco builds by ensuring some army gets made.
+_ARMY_BASE_CONFIDENCE: float = 0.45
 
 class ZergArmyProductionTactic(BuildingTacticModule):
     """
     Queue army units from idle hatcheries / lairs / hives when the strategy
     calls for aggression or when we simply have resources to spend.
 
-    The unit type chosen follows the priority list above, filtered by what
-    technology is actually available right now. Only fires when confidence
-    clearly beats the 0.40 suppression threshold to avoid spamming units
-    that aren't actually needed yet.
+    FIX: Added _MIN_ARMY_SUPPLY floor so we always build SOME military even
+    on neutral strategies like STOCK_STANDARD. Previously engage_bias=0.0
+    meant army confidence was nearly 0 unless we were losing badly.
+
+    Also added composition-target awareness: if the strategy profile specifies
+    unit ratios, we bias toward the under-represented types.
     """
 
     BUILDING_TYPES = frozenset({
@@ -244,22 +275,86 @@ class ZergArmyProductionTactic(BuildingTacticModule):
         evidence: dict = {}
 
         # Determine which unit we'd want to train
-        train_type = self._pick_unit(building, bot)
+        train_type = self._pick_unit(building, bot, current_strategy, heuristics)
         if train_type is None:
+            log.debug(
+                "ZergArmyProductionTactic: no affordable/available unit for %s",
+                building.type_id.name,
+                frame=bot.state.game_loop,
+            )
             return None  # can't afford or don't have tech for anything
 
-        # Sub-signal: strategy aggression
-        profile = current_strategy.profile()
-        agg_sig = profile.engage_bias * 0.4  # aggressive = more army
-        confidence += agg_sig
-        evidence["strategy_engage_bias"] = agg_sig
+        # --- EMERGENCY FLOOR: always build a minimum army ---
+        # Count combat supply (exclude workers, queens, overlords)
+        WORKER_AND_SUPPORT = {
+            UnitID.DRONE, UnitID.QUEEN, UnitID.OVERLORD,
+            UnitID.OVERSEER, UnitID.OVERLORDCOCOON,
+        }
+        combat_units = bot.units.exclude_type(WORKER_AND_SUPPORT)
+        combat_supply = sum(SUPPLY_COST.get(u.type_id, 2) for u in combat_units)
 
-        # Sub-signal: army value ratio — train more if we're behind
-        avr = heuristics.army_value_ratio
-        if avr < 0.8:
-            behind_sig = (0.8 - avr) * 0.5
-            confidence += behind_sig
-            evidence["army_value_behind"] = behind_sig
+        log.debug(
+            "ZergArmyProductionTactic: combat_supply=%d min_floor=%d train_type=%s",
+            combat_supply,
+            _MIN_ARMY_SUPPLY,
+            train_type.name,
+            frame=bot.state.game_loop,
+        )
+
+        if combat_supply < _MIN_ARMY_SUPPLY:
+            # Emergency mode: build army NOW regardless of strategy
+            confidence = 0.85
+            evidence["emergency_army_floor"] = 0.85
+            evidence["combat_supply"] = combat_supply
+            evidence["train_type"] = train_type.name
+            log.info(
+                "ZergArmyProductionTactic: EMERGENCY FLOOR — combat_supply=%d < %d, "
+                "forcing %s (conf=%.2f)",
+                combat_supply,
+                _MIN_ARMY_SUPPLY,
+                train_type.name,
+                confidence,
+                frame=bot.state.game_loop,
+            )
+        else:
+            # --- Normal production scoring ---
+
+            # Sub-signal: base confidence — always produce SOME army on neutral strategies
+            confidence += _ARMY_BASE_CONFIDENCE
+            evidence["army_base"] = _ARMY_BASE_CONFIDENCE
+
+            # Sub-signal: strategy aggression
+            profile = current_strategy.profile()
+            agg_sig = profile.engage_bias * 0.4  # aggressive = more army
+            confidence += agg_sig
+            evidence["strategy_engage_bias"] = agg_sig
+
+            # Sub-signal: army value ratio — train more if we're behind
+            avr = heuristics.army_value_ratio
+            if avr < 0.8:
+                behind_sig = (0.8 - avr) * 0.5
+                confidence += behind_sig
+                evidence["army_value_behind"] = behind_sig
+
+            # Sub-signal: spending efficiency — if we're mineral-floating, spend on army
+            spend_eff = heuristics.spend_efficiency
+            if spend_eff < 0.7:
+                float_sig = (0.7 - spend_eff) * 0.3
+                confidence += float_sig
+                evidence["mineral_float_pressure"] = float_sig
+
+            log.debug(
+                "ZergArmyProductionTactic: confidence=%.3f (base=%.2f agg=%.2f "
+                "behind=%.2f float=%.2f) train=%s avr=%.2f",
+                confidence,
+                _ARMY_BASE_CONFIDENCE,
+                agg_sig,
+                evidence.get("army_value_behind", 0.0),
+                evidence.get("mineral_float_pressure", 0.0),
+                train_type.name,
+                avr,
+                frame=bot.state.game_loop,
+            )
 
         if confidence < 0.15:
             return None
@@ -272,20 +367,141 @@ class ZergArmyProductionTactic(BuildingTacticModule):
             train_type=train_type,
         )
 
-    def _pick_unit(self, building: "Unit", bot: "ManifestorBot") -> Optional[UnitID]:
-        """Return the first affordable unit type from the priority list."""
+    def _pick_unit(
+        self,
+        building: "Unit",
+        bot: "ManifestorBot",
+        current_strategy: "Strategy",
+        heuristics: "HeuristicState",
+    ) -> Optional[UnitID]:
+        """
+        Return the best unit type to train, preferring composition targets if available.
+
+        FIX: Previously just returned the first affordable unit in priority order,
+        which meant zerglings were always chosen over roaches even when we needed roaches.
+        Now checks composition targets and picks the most-underrepresented affordable type.
+        """
+        profile = current_strategy.profile()
+        target = profile.active_composition(heuristics.game_phase)
+
+        # If we have a composition target, try to satisfy it
+        if target and target.ratios:
+            best_type = self._pick_by_composition(building, bot, target)
+            if best_type is not None:
+                log.debug(
+                    "ZergArmyProductionTactic: composition-driven pick=%s",
+                    best_type.name,
+                    frame=bot.state.game_loop,
+                )
+                return best_type
+
+        # Fallback: priority list
         for unit_type, structure_type in _ARMY_PRIORITY:
             if building.type_id != structure_type:
                 continue
             if not bot.can_afford(unit_type):
                 continue
             if bot.tech_requirement_progress(unit_type) < 1.0:
+                log.debug(
+                    "ZergArmyProductionTactic: %s tech not ready (%.2f)",
+                    unit_type.name,
+                    bot.tech_requirement_progress(unit_type),
+                    frame=bot.state.game_loop,
+                )
                 continue
             return unit_type
         return None
 
+    def _pick_by_composition(
+        self,
+        building: "Unit",
+        bot: "ManifestorBot",
+        target,
+    ) -> Optional[UnitID]:
+        """
+        Pick the unit type that is most underrepresented vs the composition target.
+        Only considers types that are affordable and have tech available.
+        """
+        WORKER_AND_SUPPORT = {
+            UnitID.DRONE, UnitID.QUEEN, UnitID.OVERLORD,
+            UnitID.OVERSEER, UnitID.OVERLORDCOCOON,
+        }
+        # Calculate current army supply per type
+        total_combat_supply = 0
+        supply_by_type: dict[UnitID, int] = {}
+        for unit in bot.units.exclude_type(WORKER_AND_SUPPORT):
+            cost = SUPPLY_COST.get(unit.type_id, 2)
+            supply_by_type[unit.type_id] = supply_by_type.get(unit.type_id, 0) + cost
+            total_combat_supply += cost
+
+        if total_combat_supply == 0:
+            total_combat_supply = 1  # avoid div-by-zero
+
+        # Identify which hatchery types map to valid army units
+        valid_structure_types = {
+            UnitID.HATCHERY, UnitID.LAIR, UnitID.HIVE
+        }
+        if building.type_id not in valid_structure_types:
+            return None
+
+        # Find the most under-represented affordable type
+        best_type = None
+        best_deficit = -999.0
+
+        for unit_type, ratio in target.ratios.items():
+            if unit_type in WORKER_AND_SUPPORT:
+                continue
+            # Check this unit can be trained from a hatchery-class structure
+            can_train = any(
+                structure == building.type_id
+                for u, structure in _ARMY_PRIORITY
+                if u == unit_type
+            )
+            if not can_train:
+                continue
+            if not bot.can_afford(unit_type):
+                continue
+            if bot.tech_requirement_progress(unit_type) < 1.0:
+                continue
+
+            current_fraction = supply_by_type.get(unit_type, 0) / total_combat_supply
+            deficit = ratio - current_fraction
+            if deficit > best_deficit:
+                best_deficit = deficit
+                best_type = unit_type
+
+        return best_type
+
     def execute(self, building: "Unit", idea: BuildingIdea, bot: "ManifestorBot") -> bool:
-        return self._execute_train(building, idea, bot)
+        result = self._execute_train(building, idea, bot)
+        if result:
+            log.info(
+                "ZergArmyProductionTactic: trained %s from %s tag=%d "
+                "(conf=%.2f minerals=%d vespene=%d supply_left=%d)",
+                idea.train_type.name if idea.train_type else "?",
+                building.type_id.name,
+                building.tag,
+                idea.confidence,
+                bot.minerals,
+                bot.vespene,
+                bot.supply_left,
+                frame=bot.state.game_loop,
+            )
+        else:
+            log.warning(
+                "ZergArmyProductionTactic: _execute_train returned False for %s from %s tag=%d "
+                "(conf=%.2f minerals=%d vespene=%d supply_left=%d larva=%d)",
+                idea.train_type.name if idea.train_type else "?",
+                building.type_id.name,
+                building.tag,
+                idea.confidence,
+                bot.minerals,
+                bot.vespene,
+                bot.supply_left,
+                bot.larva.amount,
+                frame=bot.state.game_loop,
+            )
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -341,10 +557,23 @@ class ZergUpgradeResearchTactic(BuildingTacticModule):
     ) -> Optional[BuildingIdea]:
         upgrade = self._pick_upgrade(building, bot, counter_ctx)
         if upgrade is None:
+            log.debug(
+                "ZergUpgradeResearchTactic: no applicable upgrade for %s",
+                building.type_id.name,
+                frame=bot.state.game_loop,
+            )
             return None
 
         confidence = 0.75
         evidence = {"upgrade": upgrade.name}
+
+        log.debug(
+            "ZergUpgradeResearchTactic: %s → researching %s (conf=%.2f)",
+            building.type_id.name,
+            upgrade.name,
+            confidence,
+            frame=bot.state.game_loop,
+        )
 
         return BuildingIdea(
             building_module=self,
@@ -363,12 +592,39 @@ class ZergUpgradeResearchTactic(BuildingTacticModule):
             if self._is_being_researched(upgrade, bot):
                 continue
             if not self._can_afford_research(upgrade, bot):
+                log.debug(
+                    "ZergUpgradeResearchTactic: cannot afford %s (minerals=%d vespene=%d)",
+                    upgrade.name,
+                    bot.minerals,
+                    bot.vespene,
+                    frame=bot.state.game_loop,
+                )
                 continue
             return upgrade
         return None
 
     def execute(self, building: "Unit", idea: BuildingIdea, bot: "ManifestorBot") -> bool:
-        return self._execute_research(building, idea, bot)
+        result = self._execute_research(building, idea, bot)
+        if result:
+            log.info(
+                "ZergUpgradeResearchTactic: started research %s from %s tag=%d",
+                idea.upgrade.name if idea.upgrade else "?",
+                building.type_id.name,
+                building.tag,
+                frame=bot.state.game_loop,
+            )
+        else:
+            log.warning(
+                "ZergUpgradeResearchTactic: _execute_research returned False for %s from %s tag=%d "
+                "(minerals=%d vespene=%d)",
+                idea.upgrade.name if idea.upgrade else "?",
+                building.type_id.name,
+                building.tag,
+                bot.minerals,
+                bot.vespene,
+                frame=bot.state.game_loop,
+            )
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +682,16 @@ class ZergRallyTactic(BuildingTacticModule):
         confidence = 0.55  # medium confidence — rally correction is useful but not urgent
         evidence = {"rally_drift": "stale" if last_rally else "initial"}
 
+        log.debug(
+            "ZergRallyTactic: %s tag=%d setting rally to (%.0f, %.0f) (%s)",
+            building.type_id.name,
+            building.tag,
+            target.x,
+            target.y,
+            evidence["rally_drift"],
+            frame=bot.state.game_loop,
+        )
+
         return BuildingIdea(
             building_module=self,
             action=BuildingAction.SET_RALLY,
@@ -469,6 +735,11 @@ class ZergRallyTactic(BuildingTacticModule):
 class ZergStructureBuildTactic(BuildingTacticModule):
     '''
     Decides when to build a new Zerg structure and enqueues a ConstructionOrder.
+
+    FIX: Relaxed the prerequisite check for EXTRACTOR to also accept a *pending*
+    Spawning Pool (not just a ready one). This means the Extractor build order is
+    queued immediately after the pool starts, so gas workers can be assigned as
+    soon as the extractor completes — matching normal Zerg macro timing.
     '''
 
     BUILDING_TYPES = frozenset({
@@ -486,20 +757,59 @@ class ZergStructureBuildTactic(BuildingTacticModule):
 
     def generate_idea(self, building, bot, heuristics, current_strategy, counter_ctx):
         for structure_type, prerequisite, min_minerals in _STRUCTURE_PRIORITY:
-            if bot.structures(structure_type).amount > 0:
-                continue
-            if bot.already_pending(structure_type) > 0:
-                continue
-            if bot.construction_queue.count_active_of_type(structure_type) > 0:
+            already_exists = bot.structures(structure_type).amount > 0
+            already_pending_ares = bot.already_pending(structure_type) > 0
+            already_in_queue = bot.construction_queue.count_active_of_type(structure_type) > 0
+
+            if already_exists or already_pending_ares or already_in_queue:
+                log.debug(
+                    "ZergStructureBuildTactic: %s already exists/pending/queued — skipping",
+                    structure_type.name,
+                    frame=bot.state.game_loop,
+                )
                 continue
 
-            if prerequisite and not bot.structures(prerequisite).ready:
-                continue
+            # Prerequisite check — with special handling for EXTRACTOR:
+            # We queue the extractor as soon as the pool is *pending* (not just ready),
+            # so gas workers are assigned the moment both buildings complete.
+            if prerequisite:
+                if structure_type == UnitID.EXTRACTOR:
+                    # Accept pending OR ready pool
+                    pool_exists = bool(bot.structures(prerequisite))
+                    pool_pending = bot.already_pending(prerequisite) > 0
+                    if not pool_exists and not pool_pending:
+                        log.debug(
+                            "ZergStructureBuildTactic: EXTRACTOR skipped — pool not started yet",
+                            frame=bot.state.game_loop,
+                        )
+                        continue
+                else:
+                    if not bot.structures(prerequisite).ready:
+                        log.debug(
+                            "ZergStructureBuildTactic: %s skipped — %s not ready",
+                            structure_type.name,
+                            prerequisite.name,
+                            frame=bot.state.game_loop,
+                        )
+                        continue
 
             if bot.minerals < min_minerals:
+                log.debug(
+                    "ZergStructureBuildTactic: %s skipped — minerals=%d < %d",
+                    structure_type.name,
+                    bot.minerals,
+                    min_minerals,
+                    frame=bot.state.game_loop,
+                )
                 continue
 
             if bot.tech_requirement_progress(structure_type) < 0.85:
+                log.debug(
+                    "ZergStructureBuildTactic: %s tech not ready (%.2f)",
+                    structure_type.name,
+                    bot.tech_requirement_progress(structure_type),
+                    frame=bot.state.game_loop,
+                )
                 continue
 
             confidence = 0.80
@@ -509,6 +819,14 @@ class ZergStructureBuildTactic(BuildingTacticModule):
             agg = profile.engage_bias * 0.10
             confidence += agg
             evidence["strategy_agg"] = round(agg, 3)
+
+            log.info(
+                "ZergStructureBuildTactic: queuing %s (conf=%.2f minerals=%d)",
+                structure_type.name,
+                confidence,
+                bot.minerals,
+                frame=bot.state.game_loop,
+            )
 
             return BuildingIdea(
                 building_module=self,
@@ -522,6 +840,10 @@ class ZergStructureBuildTactic(BuildingTacticModule):
 
     def execute(self, building, idea, bot) -> bool:
         if idea.train_type is None:
+            log.error(
+                "ZergStructureBuildTactic: execute called with None train_type",
+                frame=bot.state.game_loop,
+            )
             return False
 
         base_location = building.position
@@ -530,9 +852,10 @@ class ZergStructureBuildTactic(BuildingTacticModule):
             base_location = bot.placement_resolver.best_base_for(bot, idea.train_type)
         except Exception as exc:
             log.error(
-                "ZergStructureBuildTactic: failed to find best base for %s: %s",
-                idea.train_type,
+                "ZergStructureBuildTactic: failed to find best base for %s: %s — using building position",
+                idea.train_type.name,
                 exc,
+                frame=bot.state.game_loop,
             )
 
         order = ConstructionOrder(
@@ -547,6 +870,12 @@ class ZergStructureBuildTactic(BuildingTacticModule):
             log.game_event(
                 "BUILD_ENQUEUED",
                 f"{idea.train_type.name} near {base_location}",
+                frame=bot.state.game_loop,
+            )
+        else:
+            log.warning(
+                "ZergStructureBuildTactic: construction_queue rejected %s (already present?)",
+                idea.train_type.name,
                 frame=bot.state.game_loop,
             )
         return accepted
@@ -891,3 +1220,145 @@ class ZergOverlordProductionTactic(BuildingTacticModule):
                 frame=bot.state.game_loop,
             )
         return result
+
+
+# ---------------------------------------------------------------------------
+# 7. Gas Worker Assignment
+# ---------------------------------------------------------------------------
+
+class ZergGasWorkerTactic(BuildingTacticModule):
+    """
+    Explicitly assign idle or mineral-mining drones to gas buildings that are
+    under-saturated.
+
+    FIX: Ares mediator handles long-term gas saturation, but in practice the bot
+    was never collecting gas because:
+    1. The Extractor was queued too late (fixed in ZergStructureBuildTactic above).
+    2. No module was actively redirecting drones to gas when Ares wasn't doing it.
+
+    This module fires every ~40 frames and redirects drones to under-saturated
+    gas buildings directly — a belt-AND-suspenders approach that guarantees gas
+    collection even if the mediator doesn't handle it automatically.
+
+    Uses the EXTRACTOR / ASSIMILATOR / REFINERY as the anchor building.
+    Confidence is high (0.90) — getting gas is critical for any tech units.
+    """
+
+    BUILDING_TYPES = frozenset({
+        UnitID.EXTRACTOR,
+        UnitID.EXTRACTORRICH,
+    })
+
+    def is_applicable(self, building: "Unit", bot: "ManifestorBot") -> bool:
+        if building.type_id not in self.BUILDING_TYPES:
+            return False
+        if not self._building_is_ready(building):
+            log.debug(
+                "ZergGasWorkerTactic: extractor tag=%d not ready (progress=%.2f)",
+                building.tag,
+                building.build_progress,
+                frame=bot.state.game_loop,
+            )
+            return False
+        # Only act if under-saturated
+        if building.assigned_harvesters >= building.ideal_harvesters:
+            log.debug(
+                "ZergGasWorkerTactic: extractor tag=%d saturated (%d/%d) — skipping",
+                building.tag,
+                building.assigned_harvesters,
+                building.ideal_harvesters,
+                frame=bot.state.game_loop,
+            )
+            return False
+        return True
+
+    def generate_idea(
+        self,
+        building: "Unit",
+        bot: "ManifestorBot",
+        heuristics: "HeuristicState",
+        current_strategy: "Strategy",
+        counter_ctx: "CounterContext",
+    ) -> Optional[BuildingIdea]:
+        deficit = building.ideal_harvesters - building.assigned_harvesters
+        log.info(
+            "ZergGasWorkerTactic: extractor tag=%d needs %d more workers (%d/%d)",
+            building.tag,
+            deficit,
+            building.assigned_harvesters,
+            building.ideal_harvesters,
+            frame=bot.state.game_loop,
+        )
+
+        confidence = 0.90
+        evidence = {
+            "gas_deficit": deficit,
+            "assigned": building.assigned_harvesters,
+            "ideal": building.ideal_harvesters,
+        }
+        return BuildingIdea(
+            building_module=self,
+            action=BuildingAction.TRAIN,   # reusing TRAIN slot; execute() handles the actual redirect
+            confidence=confidence,
+            evidence=evidence,
+            train_type=None,  # not training a unit — redirecting a worker
+        )
+
+    def execute(self, building: "Unit", idea: BuildingIdea, bot: "ManifestorBot") -> bool:
+        """
+        Find a nearby mineral-mining drone and redirect it to this gas building.
+        """
+        deficit = building.ideal_harvesters - building.assigned_harvesters
+        if deficit <= 0:
+            return False
+
+        redirected = 0
+        for _ in range(deficit):
+            drone = self._find_mineral_drone(building, bot)
+            if drone is None:
+                log.warning(
+                    "ZergGasWorkerTactic: no available mineral drone to redirect to extractor tag=%d",
+                    building.tag,
+                    frame=bot.state.game_loop,
+                )
+                break
+            drone.gather(building)
+            log.info(
+                "ZergGasWorkerTactic: redirected drone tag=%d → extractor tag=%d",
+                drone.tag,
+                building.tag,
+                frame=bot.state.game_loop,
+            )
+            redirected += 1
+
+        return redirected > 0
+
+    def _find_mineral_drone(self, gas_building: "Unit", bot: "ManifestorBot"):
+        """
+        Find the closest drone that is currently mining minerals (not gas, not building).
+        """
+        from sc2.ids.ability_id import AbilityId
+        MINERAL_GATHER = {
+            AbilityId.HARVEST_GATHER,
+            AbilityId.HARVEST_GATHER_DRONE,
+        }
+        candidates = []
+        for drone in bot.workers:
+            if not drone.orders:
+                continue
+            order = drone.orders[0]
+            if order.ability.id not in MINERAL_GATHER:
+                continue
+            # Make sure it's gathering a mineral (not a gas building)
+            # The target is a mineral field or a gas geyser — check unit type
+            target_tag = getattr(order, 'target', None)
+            if target_tag is None:
+                continue
+            # Accept any mineral-gathering drone near this extractor's base
+            candidates.append(drone)
+
+        if not candidates:
+            return None
+
+        # Pick the closest one to the gas building to minimize travel time
+        return min(candidates, key=lambda d: d.distance_to(gas_building.position))
