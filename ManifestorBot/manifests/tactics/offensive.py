@@ -115,6 +115,14 @@ class StutterForwardTactic(TacticModule):
             confidence -= penalty
             evidence['low_health_penalty'] = round(-penalty, 3)
 
+        # --- sub-signal: pheromone threat hotspot awareness ---
+        if bot.pheromone_map is not None:
+            local_threat = bot.pheromone_map.sample_threat(unit.position, radius=8.0)
+            if local_threat > 1.0:
+                sig = min(0.15, local_threat * 0.05)
+                confidence -= sig   # nearby threat scent makes us more cautious
+                evidence['local_threat_scent'] = round(-sig, 3)
+
         # --- strategy bias (additive) ---
         confidence += profile.engage_bias
         evidence['strategy_engage_bias'] = profile.engage_bias

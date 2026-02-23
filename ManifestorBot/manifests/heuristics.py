@@ -41,6 +41,9 @@ class HeuristicState:
     vision_dominance: float = 0.0       # Map tiles we can see vs opponent
     expansion_race_index: float = 0.0   # Our bases vs theirs
     choke_control: float = 0.0          # Do we own key map chokepoints
+
+    # Spatial / pheromone signals
+    threat_hotspot_proximity: float = 0.0   # how close is our army to the hottest threat cell?
     
     # Army heuristics
     army_value_ratio: float = 1.0       # Our army value / their army value
@@ -85,6 +88,7 @@ class HeuristicManager:
         self._update_meta_heuristics()
         self._update_aggression_dial()
         self._update_game_phase()
+        self._update_pheromone_signals()
         # After heuristics are calculated, layer in counter-play modifiers
         ctx = self.bot.scout_ledger.get_counter_context(self.bot.state.game_loop)
         # Modify the aggression dial based on counter prescriptions
@@ -327,6 +331,25 @@ class HeuristicManager:
         """Do we own key map chokepoints"""
         # TODO: Use Ares map analyzer to identify key chokes
         self.current_state.choke_control = 0.5
+
+    def _update_pheromone_signals(self) -> None:
+        pm = self.bot.pheromone_map
+        if pm is None:
+            return
+
+        hotspot = pm.hottest_threat_point()
+        if hotspot is None:
+            self.current_state.threat_hotspot_proximity = 0.0
+            return
+
+        army = self.bot.units.exclude_type({self.bot.worker_type, self.bot.supply_type})
+        if not army:
+            self.current_state.threat_hotspot_proximity = 0.0
+            return
+
+        dist = army.center.distance_to(hotspot)
+        # Normalize: 0 = very close (high signal), 1 = far away
+        self.current_state.threat_hotspot_proximity = max(0.0, 1.0 - dist / 60.0)
         
     # ========== Army Heuristics ==========
     

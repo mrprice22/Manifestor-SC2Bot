@@ -24,6 +24,7 @@ from sc2.position import Point2
 # Local imports
 from ManifestorBot.manifests.strategy import Strategy
 from ManifestorBot.manifests.heuristics import HeuristicManager
+from ManifestorBot.manifests.pheromone_map import PheromoneMap, PheromoneConfig
 from ManifestorBot.manifests.tactics.base import TacticModule, TacticIdea
 from ManifestorBot.logger import get_logger
 from ManifestorBot.manifests.tactics.building_base import (
@@ -53,6 +54,10 @@ from ManifestorBot.construction import (
 from ManifestorBot.construction.build_ability import (
     BuildingTactic,
     register_construction_abilities,
+)
+from ManifestorBot.manifests.territory_border_map import (
+    TerritoryBorderMap,
+    BorderConfig,
 )
 
 
@@ -88,6 +93,9 @@ class ManifestorBot(AresBot):
         # Scout ledger for counter-play intelligence
         self.scout_ledger = ScoutLedger(self)
 
+        # Overlord early-warning system
+        self.territory_border_map: Optional[TerritoryBorderMap] = None
+
         # Construction system
         self.construction_queue: ConstructionQueue = ConstructionQueue()
         self.morph_tracker: MorphTracker = MorphTracker()
@@ -105,6 +113,9 @@ class ManifestorBot(AresBot):
         
         # Suppressed ideas tracker (prevents spam)
         self.suppressed_ideas: Dict[int, int] = {}  # unit_tag -> frame_last_suppressed
+    
+        # Pheromone map
+        self.pheromone_map: Optional[PheromoneMap] = None
         
         # Chat commentary settings
         self.commentary_enabled: bool = True
@@ -118,6 +129,15 @@ class ManifestorBot(AresBot):
         
         # Initialize heuristic manager
         self.heuristic_manager = HeuristicManager(self)
+        
+        # Initialize pheromone map
+        self.pheromone_map = PheromoneMap(self, PheromoneConfig())
+
+        # Initialise territory border map for overlord placement
+        self.territory_border_map = TerritoryBorderMap(self, BorderConfig())
+        log.info("TerritoryBorderMap initialised (%dx%d map)",
+                 self.game_info.pathing_grid.width,
+                 self.game_info.pathing_grid.height)
         
         # Load all tactic modules
         self._load_tactic_modules()
@@ -150,6 +170,15 @@ class ManifestorBot(AresBot):
         
         self.morph_tracker.update(self)
         self.scout_ledger.update(iteration)
+        self.pheromone_map.update(iteration)
+        if self.territory_border_map is not None:
+            self.territory_border_map.update(iteration)
+        
+        if iteration % 224 == 0 and self.territory_border_map is not None:
+            log.info(self.territory_border_map.summary())
+            uncovered = self.territory_border_map.get_uncovered_slots()
+            if uncovered:
+                log.info("Uncovered border slots: %d", len(uncovered))
 
         # STAGE 1: Calculate all heuristics
         self.heuristic_manager.update(iteration)
@@ -433,6 +462,7 @@ class ManifestorBot(AresBot):
         )
         from ManifestorBot.manifests.tactics.flank import FlankTactic
         from ManifestorBot.manifests.tactics.defensive import KeepUnitSafeTactic
+        from ManifestorBot.manifests.tactics.overlord_border import OverlordBorderTactic
 
         self.tactic_modules = [
             BuildingTactic(),
@@ -443,6 +473,7 @@ class ManifestorBot(AresBot):
             HoldChokePointTactic(),
             RallyToArmyTactic(),
             KeepUnitSafeTactic(),
+            OverlordBorderTactic(),
         ]
 
         log.info(
@@ -460,6 +491,9 @@ class ManifestorBot(AresBot):
         """Clean shutdown"""
         if hasattr(self, 'state'):
             await super().on_end(game_result)
+
+        if self.territory_border_map is not None:
+            log.info("Final border map state: %s", self.territory_border_map.summary())
 
         log.game_event(
             "GAME_END",
