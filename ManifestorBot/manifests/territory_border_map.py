@@ -38,6 +38,8 @@ from typing import TYPE_CHECKING, Optional
 
 from sc2.position import Point2
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
+from ManifestorBot.logger import get_logger
+log = get_logger()
 
 if TYPE_CHECKING:
     from ManifestorBot.manifestor_bot import ManifestorBot
@@ -177,7 +179,6 @@ class TerritoryBorderMap:
         3. Filter to walkable/flyable cells within watch_ring_inner/outer.
         4. Thin to max_slots well-spaced points.
         """
-        print("Recomputing watch ring...", flush=True)
         try:
             coverage = self._build_coverage_mask()
             if coverage is None:
@@ -191,13 +192,11 @@ class TerritoryBorderMap:
             if not slots:
                 slots = self._fallback_unexplored_edge_slots()
             self._watch_slots = slots
-            print("Watch ring recomputed:", len(self._watch_slots), not ring_cells, flush=True)
             log.info("Watch ring recomputed: %d slots (fallback=%s)", len(self._watch_slots), not ring_cells)
 
         except Exception as e:
-            import traceback
-            print(f"_recompute_watch_ring CRASHED: {e}", flush=True)
-            traceback.print_exc()
+            log.error("_fallback_unexplored_edge_slots: failed to read visibility: %s", e)
+            
 
     def _fallback_unexplored_edge_slots(self) -> list[Point2]:
         """
