@@ -177,47 +177,123 @@ class TerritoryBorderMap:
         3. Filter to walkable/flyable cells within watch_ring_inner/outer.
         4. Thin to max_slots well-spaced points.
         """
-        coverage = self._build_coverage_mask()
-        if coverage is None:
-            return
+        print("Recomputing watch ring...", flush=True)
+        try:
+            coverage = self._build_coverage_mask()
+            if coverage is None:
+                return
 
-        ring_cells = self._find_ring_cells(coverage)
-        slots = self._cells_to_points(ring_cells)
-        slots = self._thin_slots(slots)
-        self._watch_slots = slots
+            ring_cells = self._find_ring_cells(coverage)
+            slots = self._cells_to_points(ring_cells)
+            slots = self._thin_slots(slots)
+
+            # --- Fallback: if no creep-edge slots found, use unexplored map boundary ---
+            if not slots:
+                slots = self._fallback_unexplored_edge_slots()
+            self._watch_slots = slots
+            print("Watch ring recomputed:", len(self._watch_slots), not ring_cells, flush=True)
+            log.info("Watch ring recomputed: %d slots (fallback=%s)", len(self._watch_slots), not ring_cells)
+
+        except Exception as e:
+            import traceback
+            print(f"_recompute_watch_ring CRASHED: {e}", flush=True)
+            traceback.print_exc()
+
+    def _fallback_unexplored_edge_slots(self) -> list[Point2]:
+        """
+        When creep-edge computation yields nothing (e.g. game start, no creep
+        spread yet), place overlords at the boundary between explored and
+        unexplored areas of the map.
+        
+        Uses visibility: cells with value 0 = never seen.
+        The boundary = explored cells (value >= 1) adjacent to unexplored (0).
+        """
+        try:
+            vis = self.bot.state.visibility
+            h, w = self._map_h, self._map_w
+            raw = np.frombuffer(vis.data, dtype=np.uint8).reshape(h, w)
+        except Exception:
+            return []
+
+        explored = raw >= 1   # seen at any point (value 1 or 2)
+        unexplored = raw == 0
+
+        # Boundary = unexplored cells adjacent to explored cells
+        # Dilate explored by 1 step, intersect with unexplored
+        from numpy import roll, zeros_like
+        dilated = (
+            roll(explored, 1, axis=0) | roll(explored, -1, axis=0) |
+            roll(explored, 1, axis=1) | roll(explored, -1, axis=1) |
+            explored
+        )
+        boundary_mask = dilated & unexplored
+
+        ys, xs = np.where(boundary_mask)
+        if len(ys) == 0:
+            # Total fallback: just distribute across map edges
+            return self._map_edge_slots()
+
+        cells = list(zip(ys.tolist(), xs.tolist()))
+        slots = self._cells_to_points(cells)
+        return self._thin_slots(slots)
+
+    def _map_edge_slots(self) -> list[Point2]:
+        """Last-resort: evenly spaced positions around the map perimeter."""
+        w, h = float(self._map_w), float(self._map_h)
+        margin = 8.0
+        candidates = []
+        spacing = self.cfg.slot_spacing * 2
+        x = margin
+        while x < w - margin:
+            candidates.append(Point2((x, margin)))
+            candidates.append(Point2((x, h - margin)))
+            x += spacing
+        y = margin
+        while y < h - margin:
+            candidates.append(Point2((margin, y)))
+            candidates.append(Point2((w - margin, y)))
+            y += spacing
+        return self._thin_slots(candidates)
 
     def _build_coverage_mask(self) -> Optional[np.ndarray]:
         """
-        Build a boolean 2D array (map_h × map_w) where True = we currently
-        have vision of this tile.
-
-        python-sc2 exposes bot.state.visibility_map as a PixelMap where
-        each cell is 0 (no vision), 1 (fogged but seen before), or 2
-        (currently visible). We treat 2 as "covered".
+        Build a boolean 2D array (map_h × map_w) where True = covered.
+        Uses numpy vectorisation instead of Python loops.
         """
         try:
-            vis = self.bot.state.visibility_map
+            vis = self.bot.state.visibility
         except AttributeError:
+            print("_build_coverage_mask: visibility is None, returning early", flush=True)
+            print(f"bot.state type: {type(self.bot.state)}", flush=True)
+            print(f"bot.state: {self.bot.state}", flush=True)
             return None
 
         h, w = self._map_h, self._map_w
-        mask = np.zeros((h, w), dtype=bool)
 
-        # PixelMap stores data row-major; iterate over the raw data directly.
-        # The __getitem__ accepts (x, y) in game-space.
-        for y in range(h):
-            for x in range(w):
-                if vis[x, y] == 2:
-                    mask[y, x] = True
-
-        # Also mark tiles under creep as "covered" — we have passive vision
-        # there from creep tumors, so no overlord needed on those tiles.
+        # python-sc2 PixelMap: access the raw data as a numpy array
+        # .data_numpy gives a (h, w) uint8 array where 2 = currently visible
         try:
-            creep = self.bot.state.creep
+            raw = np.frombuffer(vis.data, dtype=np.uint8).reshape(h, w)
+            mask = raw == 2
+        except Exception:
+            # Fallback: slower but correct
+            mask = np.zeros((h, w), dtype=bool)
             for y in range(h):
                 for x in range(w):
-                    if creep[x, y]:
+                    if vis[x, y] == 2:
                         mask[y, x] = True
+
+        # Also mark creep tiles as covered
+        try:
+            creep = self.bot.state.creep
+            try:
+                creep_raw = np.frombuffer(creep.data, dtype=np.uint8).reshape(h, w)
+                mask |= creep_raw.astype(bool)
+            except Exception:
+                for y in range(h):
+                    for x in range(w):
+                        if creep[x, y]:
+                            mask[y, x] = True
         except AttributeError:
             pass
 
