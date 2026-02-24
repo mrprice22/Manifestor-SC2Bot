@@ -52,14 +52,24 @@ class MineAbility(Ability):
     def can_use(self, unit: Unit, context: AbilityContext, bot: "ManifestorBot") -> bool:
         """
         A drone can mine if:
-        - It is not already actively gathering (to avoid fighting Ares mining).
+        - It is idle, OR its current gather target has been depleted / is at a
+          fully-saturated base (needs reassignment).
         - There is at least one mineral field or gas building accessible.
         """
-        # If the drone already has a gather order in flight, let Ares handle it.
         if unit.orders:
             order = unit.orders[0]
             if order.ability.id in _GATHER_ABILITIES:
-                return False  # already mining — don't interfere
+                # Check if the drone's current townhall is mined-out or over-
+                # saturated — if so, we *should* intervene and reassign it.
+                if bot.townhalls.ready:
+                    closest_th = bot.townhalls.ready.closest_to(unit.position)
+                    nearby_minerals = bot.mineral_field.closer_than(10, closest_th.position)
+                    if not nearby_minerals:
+                        return True  # base mined out — reassign
+                    ideal = len(nearby_minerals) * 2
+                    if closest_th.assigned_harvesters > ideal:
+                        return True  # over-saturated — reassign
+                return False  # gather order is fine — let Ares handle it
 
         # Need somewhere to mine
         return bool(bot.mineral_field or bot.gas_buildings.ready)
@@ -90,22 +100,47 @@ class MineAbility(Ability):
 
         Priority order:
         1. Gas buildings that are ready and under-saturated (≤ 2 workers).
-        2. Mineral fields near the nearest owned townhall.
-        3. Any mineral field as a fallback.
+        2. The nearest *under-saturated* townhall's mineral line — this is the
+           key change that makes drones transfer away from mined-out bases.
+        3. Any mineral field as a global fallback.
         """
         # 1. Unsaturated gas
         for geyser in bot.gas_buildings.ready:
             if geyser.assigned_harvesters < geyser.ideal_harvesters:
                 return geyser
 
-        # 2. Minerals near nearest townhall
+        # 2. Minerals at the nearest under-saturated base.
+        #    We rank townhalls by saturation headroom (most under-saturated
+        #    first) and break ties by distance so drones prefer nearby bases.
         if bot.townhalls.ready:
-            closest_th = bot.townhalls.ready.closest_to(unit.position)
-            nearby_minerals = bot.mineral_field.closer_than(10, closest_th.position)
-            if nearby_minerals:
-                return nearby_minerals.closest_to(unit.position)
+            best_target: Optional[Unit] = None
+            best_score: float = float("inf")
 
-        # 3. Any mineral
+            for th in bot.townhalls.ready:
+                nearby_minerals = bot.mineral_field.closer_than(10, th.position)
+                if not nearby_minerals:
+                    continue  # mined-out base — skip entirely
+
+                ideal = len(nearby_minerals) * 2
+                assigned = th.assigned_harvesters
+                if assigned >= ideal:
+                    continue  # already saturated
+
+                # Lower score = better candidate.
+                # Prefer bases that need workers (headroom) weighted against
+                # distance so drones don't walk across the map unnecessarily.
+                headroom = ideal - assigned
+                distance = unit.position.distance_to(th.position)
+                score = distance / max(headroom, 1)
+
+                if score < best_score:
+                    best_score = score
+                    best_target = nearby_minerals.closest_to(unit.position)
+
+            if best_target is not None:
+                return best_target
+
+        # 3. Any mineral (last resort)
         if bot.mineral_field:
             return bot.mineral_field.closest_to(unit.position)
 

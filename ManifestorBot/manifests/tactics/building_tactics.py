@@ -756,6 +756,15 @@ class ZergStructureBuildTactic(BuildingTacticModule):
         return True  # generate_idea handles all the dedup logic
 
     def generate_idea(self, building, bot, heuristics, current_strategy, counter_ctx):
+        # ── Dynamic expansion gate ────────────────────────────────────
+        # Check the strategy's composition curve for max_hatcheries at
+        # the current game phase and queue a new expansion if we're below
+        # the cap. This is the ONLY path that creates hatcheries after
+        # the opening build order finishes.
+        expansion_idea = self._maybe_expand(building, bot, heuristics, current_strategy)
+        if expansion_idea is not None:
+            return expansion_idea
+
         for structure_type, prerequisite, min_minerals in _STRUCTURE_PRIORITY:
             already_exists = bot.structures(structure_type).amount > 0
             already_pending_ares = bot.already_pending(structure_type) > 0
@@ -879,6 +888,106 @@ class ZergStructureBuildTactic(BuildingTacticModule):
                 frame=bot.state.game_loop,
             )
         return accepted
+
+    # ------------------------------------------------------------------
+    # Dynamic expansion helper
+    # ------------------------------------------------------------------
+
+    # Minimum minerals before we consider expanding.
+    _EXPAND_MIN_MINERALS: int = 300
+
+    # Cooldown: don't queue another hatchery if one is already building or
+    # was queued fewer than this many frames ago.
+    _EXPAND_COOLDOWN_FRAMES: int = 224  # ~10 seconds at Faster speed
+
+    def _maybe_expand(
+        self, building, bot, heuristics, current_strategy
+    ) -> "BuildingIdea | None":
+        """
+        Queue a new Hatchery expansion when we're below the strategy's
+        ``max_hatcheries`` cap for the current game phase.
+
+        Guards:
+        - There is a free expansion location on the map.
+        - We have enough minerals.
+        - No hatchery is already pending / under construction / recently queued.
+        - Current base count (including in-progress) < max_hatcheries.
+        - At least one existing base is approaching mineral saturation, so the
+          expansion actually serves a purpose.
+        """
+        profile = current_strategy.profile()
+        comp = profile.active_composition(heuristics.game_phase)
+        if comp is None:
+            return None
+
+        max_hatch = comp.max_hatcheries
+        # Count all townhalls — ready + in-progress — so we don't double-queue.
+        current_bases = bot.townhalls.amount + bot.already_pending(UnitID.HATCHERY)
+        if current_bases >= max_hatch:
+            return None
+
+        # Don't expand if we recently queued one.
+        if bot.construction_queue.count_active_of_type(UnitID.HATCHERY) > 0:
+            return None
+
+        # Mineral gate — need resources for the hatch (300) plus a buffer.
+        if bot.minerals < self._EXPAND_MIN_MINERALS:
+            return None
+
+        # Saturation trigger: expand when existing bases are ≥70% saturated on
+        # average, OR when we have excess minerals (banking > 500 means we
+        # should be spending on infrastructure).
+        total_ideal = 0
+        total_assigned = 0
+        for th in bot.townhalls.ready:
+            patches = bot.mineral_field.closer_than(10, th.position)
+            total_ideal += len(patches) * 2
+            total_assigned += th.assigned_harvesters
+        avg_saturation = total_assigned / max(total_ideal, 1)
+        banking_hard = bot.minerals > 500
+
+        if avg_saturation < 0.70 and not banking_hard:
+            log.debug(
+                "ZergStructureBuildTactic: expansion skipped — saturation %.0f%% < 70%%",
+                avg_saturation * 100,
+                frame=bot.state.game_loop,
+            )
+            return None
+
+        # Verify a free expansion slot exists.
+        taken = {th.position for th in bot.townhalls}
+        free_expansion = None
+        for exp in bot.expansion_locations_list:
+            if exp not in taken:
+                free_expansion = exp
+                break
+        if free_expansion is None:
+            return None
+
+        confidence = 0.75
+        evidence = {
+            "expansion": True,
+            "current_bases": current_bases,
+            "max_hatcheries": max_hatch,
+            "avg_saturation": round(avg_saturation, 2),
+        }
+
+        log.info(
+            "ZergStructureBuildTactic: queuing HATCHERY expansion #%d/%d "
+            "(sat=%.0f%% minerals=%d)",
+            current_bases + 1, max_hatch,
+            avg_saturation * 100, bot.minerals,
+            frame=bot.state.game_loop,
+        )
+
+        return BuildingIdea(
+            building_module=self,
+            action=BuildingAction.TRAIN,
+            confidence=confidence,
+            evidence=evidence,
+            train_type=UnitID.HATCHERY,
+        )
+
 
 # ---------------------------------------------------------------------------
 # 5. Queen Production

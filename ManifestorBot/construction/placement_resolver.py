@@ -240,11 +240,24 @@ class PlacementResolver:
                     return th.position
             return bot.start_location
 
-        # Hatcheries → nearest unoccupied expansion
+        # Hatcheries → nearest unoccupied expansion to our existing bases.
+        # Prefer expanding close to home (safer, more likely on creep).
         if structure_type == UnitID.HATCHERY:
             taken = {th.position for th in bot.townhalls}
-            for exp in bot.expansion_locations_list:
-                if exp not in taken:
-                    return exp
+            # Also exclude locations where a hatchery is already pending.
+            pending_hatch = bot.units_and_structures.of_type(UnitID.HATCHERY).not_ready
+            for ph in pending_hatch:
+                taken.add(ph.position)
+
+            free = [exp for exp in bot.expansion_locations_list if exp not in taken]
+            if free:
+                # Sort by distance to our closest existing townhall.
+                if bot.townhalls:
+                    free.sort(
+                        key=lambda e: min(
+                            e.distance_to(th.position) for th in bot.townhalls
+                        )
+                    )
+                return free[0]
 
         return bot.start_location

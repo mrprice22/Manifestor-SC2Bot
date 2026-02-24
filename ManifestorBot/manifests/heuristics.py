@@ -279,8 +279,24 @@ class HeuristicManager:
         self.current_state.worker_safety_index = min_safety
         
     def _update_saturation_delta(self) -> None:
-        """How many more workers could we use productively"""
-        ideal_workers = len(self.bot.townhalls) * 16  # ~16 per base
+        """How many more workers could we use productively.
+
+        Uses actual mineral patch counts per base rather than a flat 16-per-
+        townhall estimate.  Bases whose minerals have been mined out contribute
+        nothing to the ideal count, which prevents the bot from over-producing
+        drones it cannot employ.
+        """
+        ideal_workers = 0
+        for th in self.bot.townhalls.ready:
+            # Count mineral patches still alive within mining range of this TH.
+            patches = self.bot.mineral_field.closer_than(10, th.position)
+            # Standard saturation: 2 workers per mineral patch.
+            ideal_workers += len(patches) * 2
+            # Add gas slots (3 per ready extractor at this base).
+            local_gas = self.bot.gas_buildings.ready.closer_than(10, th.position)
+            for g in local_gas:
+                ideal_workers += g.ideal_harvesters  # typically 3
+
         current_workers = len(self.bot.workers)
         self.current_state.saturation_delta = ideal_workers - current_workers
         
