@@ -1397,7 +1397,165 @@ class ZergOverlordProductionTactic(BuildingTacticModule):
 
 
 # ---------------------------------------------------------------------------
-# 7. Gas Worker Assignment
+# 7. Tech Morph (Hatchery → Lair → Hive)
+# ---------------------------------------------------------------------------
+
+class ZergTechMorphTactic(BuildingTacticModule):
+    """
+    Morph a Hatchery into a Lair, or a Lair into a Hive.
+
+    Only one Lair and one Hive are needed — the rest of the townhalls
+    stay as Hatcheries.  The morph ties up the building for ~71 seconds
+    but larva production and usage continue, so the real cost is just
+    blocking Queen production on that one townhall during the morph.
+
+    Timing gates:
+      Lair — Spawning Pool ready, 2+ townhalls, 150 min / 100 gas
+      Hive — Infestation Pit ready, 3+ townhalls, 200 min / 150 gas
+    """
+
+    BUILDING_TYPES = frozenset({
+        UnitID.HATCHERY,
+        UnitID.LAIR,
+    })
+
+    def is_applicable(self, building, bot) -> bool:
+        if building.type_id not in self.BUILDING_TYPES:
+            return False
+        if not self._building_is_ready(building):
+            return False
+        if not self._building_is_idle(building):
+            return False
+        return True
+
+    def generate_idea(self, building, bot, heuristics, current_strategy, counter_ctx):
+        # ── Hatchery → Lair ───────────────────────────────────────────
+        if building.type_id == UnitID.HATCHERY:
+            return self._consider_lair(building, bot)
+
+        # ── Lair → Hive ──────────────────────────────────────────────
+        if building.type_id == UnitID.LAIR:
+            return self._consider_hive(building, bot)
+
+        return None
+
+    def _consider_lair(self, building, bot):
+        # Already have a Lair or Hive (or one morphing)?
+        lair_count = (
+            bot.structures(UnitID.LAIR).amount
+            + bot.structures(UnitID.HIVE).amount
+            + bot.already_pending(UnitID.LAIR)
+        )
+        if lair_count > 0:
+            return None
+
+        # Prerequisite: Spawning Pool ready
+        if not bot.structures(UnitID.SPAWNINGPOOL).ready:
+            return None
+
+        # Don't morph your only hatchery
+        if len(bot.townhalls.ready) < 2:
+            return None
+
+        # Resource gate
+        if bot.minerals < 150 or bot.vespene < 100:
+            return None
+
+        confidence = 0.80
+        evidence = {
+            "tech_morph": "LAIR",
+            "townhalls": len(bot.townhalls.ready),
+        }
+
+        log.info(
+            "ZergTechMorphTactic: Lair morph ready (minerals=%d gas=%d townhalls=%d)",
+            bot.minerals, bot.vespene, len(bot.townhalls.ready),
+            frame=bot.state.game_loop,
+        )
+
+        return BuildingIdea(
+            building_module=self,
+            action=BuildingAction.TRAIN,
+            confidence=confidence,
+            evidence=evidence,
+            train_type=UnitID.LAIR,
+        )
+
+    def _consider_hive(self, building, bot):
+        # Already have a Hive (or one morphing)?
+        hive_count = (
+            bot.structures(UnitID.HIVE).amount
+            + bot.already_pending(UnitID.HIVE)
+        )
+        if hive_count > 0:
+            return None
+
+        # Prerequisite: Infestation Pit ready
+        if not bot.structures(UnitID.INFESTATIONPIT).ready:
+            return None
+
+        # Want a solid economy before committing to Hive tech
+        if len(bot.townhalls.ready) < 3:
+            return None
+
+        # Resource gate
+        if bot.minerals < 200 or bot.vespene < 150:
+            return None
+
+        confidence = 0.80
+        evidence = {
+            "tech_morph": "HIVE",
+            "townhalls": len(bot.townhalls.ready),
+        }
+
+        log.info(
+            "ZergTechMorphTactic: Hive morph ready (minerals=%d gas=%d townhalls=%d)",
+            bot.minerals, bot.vespene, len(bot.townhalls.ready),
+            frame=bot.state.game_loop,
+        )
+
+        return BuildingIdea(
+            building_module=self,
+            action=BuildingAction.TRAIN,
+            confidence=confidence,
+            evidence=evidence,
+            train_type=UnitID.HIVE,
+        )
+
+    def execute(self, building, idea, bot) -> bool:
+        """
+        Issue the morph command directly on the building.
+
+        Cannot use _execute_train() because that routes through larva for
+        Zerg units.  Lair/Hive are structure morphs issued on the building.
+        """
+        if idea.train_type not in (UnitID.LAIR, UnitID.HIVE):
+            log.error(
+                "ZergTechMorphTactic: unexpected train_type %s",
+                idea.train_type,
+                frame=bot.state.game_loop,
+            )
+            return False
+
+        result = building.train(idea.train_type)
+        if result:
+            log.game_event(
+                "TECH_MORPH",
+                f"{building.type_id.name} → {idea.train_type.name} tag={building.tag}",
+                frame=bot.state.game_loop,
+            )
+        else:
+            log.warning(
+                "ZergTechMorphTactic: morph command failed for %s → %s",
+                building.type_id.name,
+                idea.train_type.name,
+                frame=bot.state.game_loop,
+            )
+        return result
+
+
+# ---------------------------------------------------------------------------
+# 8. Gas Worker Assignment
 # ---------------------------------------------------------------------------
 
 class ZergGasWorkerTactic(BuildingTacticModule):

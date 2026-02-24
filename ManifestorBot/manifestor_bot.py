@@ -36,10 +36,11 @@ from ManifestorBot.manifests.tactics.building_tactics import (
     ZergArmyProductionTactic,
     ZergUpgradeResearchTactic,
     ZergRallyTactic,
-    ZergStructureBuildTactic, 
+    ZergStructureBuildTactic,
     ZergOverlordProductionTactic,
     ZergQueenProductionTactic,
     ZergGasWorkerTactic,
+    ZergTechMorphTactic,
 )
 from ManifestorBot.manifests.tactics.queen_tactics import (
     QueenInjectTactic,
@@ -558,6 +559,7 @@ class ManifestorBot(AresBot):
             ZergArmyProductionTactic(),    # Army BEFORE workers — fix for eco-only behavior
             ZergWorkerProductionTactic(),  # Workers after army is seeded
             ZergUpgradeResearchTactic(),   # Upgrades when affordable
+            ZergTechMorphTactic(),         # Hatchery → Lair → Hive tech progression
             ZergStructureBuildTactic(),    # Build structures when needed
             ZergGasWorkerTactic(),         # Ensure gas workers are always assigned
         ]
