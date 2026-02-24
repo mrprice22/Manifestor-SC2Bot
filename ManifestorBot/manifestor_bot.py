@@ -498,6 +498,7 @@ class ManifestorBot(AresBot):
         from ManifestorBot.manifests.tactics.flank import FlankTactic
         from ManifestorBot.manifests.tactics.defensive import KeepUnitSafeTactic
         from ManifestorBot.manifests.tactics.overlord_border import OverlordBorderTactic
+        from ManifestorBot.manifests.tactics.patrol import OpportunisticPatrolTactic
 
         self.tactic_modules = [
             BuildingTactic(),
@@ -507,6 +508,7 @@ class ManifestorBot(AresBot):
             FlankTactic(),
             HoldChokePointTactic(),
             RallyToArmyTactic(),
+            OpportunisticPatrolTactic(),
             KeepUnitSafeTactic(),
             OverlordBorderTactic(),
             QueenInjectTactic(),
