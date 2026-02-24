@@ -511,10 +511,14 @@ class ManifestorBot(AresBot):
         from ManifestorBot.manifests.tactics.defensive import KeepUnitSafeTactic
         from ManifestorBot.manifests.tactics.overlord_border import OverlordBorderTactic
         from ManifestorBot.manifests.tactics.patrol import OpportunisticPatrolTactic
+        from ManifestorBot.manifests.tactics.base_defense import BaseDefenseTactic
+        from ManifestorBot.manifests.tactics.commit_attack import CommitAttackTactic
 
         self.tactic_modules = [
             BuildingTactic(),
             MiningTactic(),
+            BaseDefenseTactic(),
+            CommitAttackTactic(),
             StutterForwardTactic(),
             HarassWorkersTactic(),
             FlankTactic(),
