@@ -7,6 +7,7 @@ BuildChoices:
     Cycle:
       - StandardOpener
       - EarlyAggression
+      - TurtleEco
 
   Terran:
     BotName: ManifestorBot
@@ -23,29 +24,47 @@ BuildChoices:
     Cycle:
       - StandardOpener
 
+
 Builds:
+
   StandardOpener:
-    ConstantWorkerProductionTill: 18
+    ConstantWorkerProductionTill: 20
     OpeningBuildOrder:
-      - 13 spawningpool
-      - 17 expand @ nat
-      - 18 queen
-      - 18 overlord
-      - 0 queen
-      - 0 zerglingmovementspeed
+      - 13 overlord
+      - 16 hatchery @ nat
+      - 18 extractor
+      - 17 spawningpool
+      - 19 overlord
+      - 20 queen
+      - 20 queen
+      - 22 zergling x4
+      - 100 zerglingmovementspeed
+
 
   EarlyAggression:
     ConstantWorkerProductionTill: 16
     OpeningBuildOrder:
+      - 13 overlord
       - 12 spawningpool
+      - 14 extractor
       - 14 queen
-      - 16 zergling x6
+      - 15 zergling x6
+      - 16 overlord
+      - 17 zergling x6
       - 18 expand @ nat
+      - 100 zerglingmovementspeed
+
 
   TurtleEco:
-    ConstantWorkerProductionTill: 20
+    ConstantWorkerProductionTill: 24
     OpeningBuildOrder:
-      - 17 expand @ nat
+      - 13 overlord
+      - 16 hatchery @ nat
       - 18 spawningpool
+      - 19 overlord
       - 20 queen
       - 20 queen
+      - 22 hatchery
+      - 24 extractor
+      - 26 overlord
+      - 28 roachwarren

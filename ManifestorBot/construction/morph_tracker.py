@@ -142,6 +142,12 @@ class MorphTracker:
                 self._watching_for.setdefault(order.structure_type, [])
                 if order not in self._watching_for[order.structure_type]:
                     self._watching_for[order.structure_type].append(order)
+                log.debug(
+                    "MorphTracker: registered claim — %s by drone=%d",
+                    order.structure_type.name,
+                    order.claimed_by,
+                    frame=bot.state.game_loop,
+                )
 
     def _detect_morph_starts(
         self,
@@ -181,29 +187,72 @@ class MorphTracker:
     ) -> None:
         """
         Check bot.structures for new structures that match BUILDING orders.
+
+        FIX (2026-02-23): Previously crashed with `list.remove(x): x not in list`
+        when two structures of the same type appeared in the same tick (e.g. a
+        BANELINGNEST that was already present in bot.structures when the tracker
+        first saw it). The inner struct loop could match the same `closest_order`
+        twice — the first removal succeeded, the second raised ValueError.
+
+        Two guards added:
+        1. Re-filter `building_orders` inside the struct loop to exclude orders
+           whose status is already DONE (mutated by mark_done() on a prior struct).
+        2. Check `closest_order in orders` before calling `orders.remove()` as a
+           belt-and-suspenders defence against any other path that might remove
+           the order first.
         """
         if not self._watching_for:
             return
 
         for structure_type, orders in list(self._watching_for.items()):
-            building_orders = [o for o in orders if o.status == OrderStatus.BUILDING]
-            if not building_orders:
-                continue
-
             # Look for a newly appeared structure of this type
             matching_structures = bot.structures(structure_type)
             for struct in matching_structures:
                 if struct.tag in self._completed_structure_tags:
                     continue
 
+                # Re-filter each iteration so we only consider orders that are
+                # still genuinely BUILDING (not already marked DONE this tick).
+                building_orders = [o for o in orders if o.status == OrderStatus.BUILDING]
+                if not building_orders:
+                    log.debug(
+                        "MorphTracker: %s tag=%d appeared but no BUILDING orders — "
+                        "may be a pre-existing structure not tracked by this system",
+                        structure_type.name,
+                        struct.tag,
+                        frame=frame,
+                    )
+                    # Still mark it seen so we don't log this every tick
+                    self._completed_structure_tags.add(struct.tag)
+                    continue
+
                 # Find the closest BUILDING order to this structure
                 closest_order = self._find_matching_order(struct, building_orders)
                 if closest_order is None:
+                    log.debug(
+                        "MorphTracker: %s tag=%d matched no order within radius %.0f — skipping",
+                        structure_type.name,
+                        struct.tag,
+                        _COMPLETION_RADIUS,
+                        frame=frame,
+                    )
                     continue
 
                 queue.mark_done(closest_order)
                 self._completed_structure_tags.add(struct.tag)
-                orders.remove(closest_order)
+
+                # Guard: only remove if still present (prevents ValueError if
+                # another code path already removed it this tick)
+                if closest_order in orders:
+                    orders.remove(closest_order)
+                else:
+                    log.warning(
+                        "MorphTracker: closest_order for %s tag=%d was already removed "
+                        "from _watching_for — double-completion avoided",
+                        structure_type.name,
+                        struct.tag,
+                        frame=frame,
+                    )
 
                 log.game_event(
                     "MORPH_COMPLETE",
@@ -267,6 +316,11 @@ class MorphTracker:
         self._watching_for.setdefault(order.structure_type, [])
         if order not in self._watching_for[order.structure_type]:
             self._watching_for[order.structure_type].append(order)
+        log.debug(
+            "MorphTracker.register_claim: %s claimed by drone=%d",
+            order.structure_type.name,
+            drone_tag,
+        )
 
     # ------------------------------------------------------------------
     # Utilities
