@@ -362,14 +362,26 @@ class ZergArmyProductionTactic(BuildingTacticModule):
                 confidence += float_sig
                 evidence["mineral_float_pressure"] = float_sig
 
+            # Sub-signal: resource pressure manager (overbanking override)
+            rp = getattr(bot, 'resource_pressure', None)
+            if rp is not None:
+                boost = rp.army_production_boost(bot)
+                if boost > 0:
+                    confidence += boost
+                    evidence['mineral_pressure'] = round(boost, 3)
+                if rp.is_panic_mode(bot):
+                    confidence = max(confidence, 0.92)
+                    evidence['panic_mode'] = 0.92
+
             log.debug(
                 "ZergArmyProductionTactic: confidence=%.3f (base=%.2f agg=%.2f "
-                "behind=%.2f float=%.2f) train=%s avr=%.2f",
+                "behind=%.2f float=%.2f mineral_pressure=%.3f) train=%s avr=%.2f",
                 confidence,
                 _ARMY_BASE_CONFIDENCE,
                 agg_sig,
                 evidence.get("army_value_behind", 0.0),
                 evidence.get("mineral_float_pressure", 0.0),
+                evidence.get("mineral_pressure", 0.0),
                 train_type.name,
                 avr,
                 frame=bot.state.game_loop,
@@ -749,6 +761,109 @@ class ZergRallyTactic(BuildingTacticModule):
             target = army_center
 
         return target
+
+
+# ---------------------------------------------------------------------------
+# 4b. Hatchery Rebuild — replace destroyed townhalls
+# ---------------------------------------------------------------------------
+
+class ZergHatcheryRebuildTactic(BuildingTacticModule):
+    """
+    Detects destroyed hatcheries tracked in bot._lost_hatchery_positions and
+    enqueues a replacement ConstructionOrder at the original location.
+
+    Priority 90 > normal expand priority 80, so rebuilds beat new expansions
+    when both are affordable.
+    """
+
+    BUILDING_TYPES = frozenset({UnitID.HATCHERY, UnitID.LAIR, UnitID.HIVE})
+
+    def is_applicable(self, building, bot) -> bool:
+        if building.type_id not in self.BUILDING_TYPES:
+            return False
+        if not self._building_is_ready(building):
+            return False
+        if not self._building_is_idle(building):
+            return False
+        return bool(getattr(bot, '_lost_hatchery_positions', []))
+
+    def generate_idea(self, building, bot, heuristics, current_strategy, counter_ctx):
+        lost = getattr(bot, '_lost_hatchery_positions', [])
+
+        # Remove positions where a townhall already exists (rebuild complete)
+        cleaned = [
+            pos for pos in lost
+            if not bot.townhalls.closer_than(5.0, pos)
+        ]
+        bot._lost_hatchery_positions = cleaned
+
+        if not cleaned:
+            return None
+
+        if bot.minerals < 500:
+            log.debug(
+                "ZergHatcheryRebuildTactic: minerals=%d < 500 — waiting for funds",
+                bot.minerals,
+                frame=bot.state.game_loop,
+            )
+            return None
+
+        if bot.construction_queue.count_active_of_type(UnitID.HATCHERY) > 0:
+            log.debug(
+                "ZergHatcheryRebuildTactic: hatchery already in queue — skipping",
+                frame=bot.state.game_loop,
+            )
+            return None
+
+        confidence = 0.85
+        evidence = {'rebuild_lost_hatch': len(cleaned)}
+
+        log.info(
+            "ZergHatcheryRebuildTactic: %d lost position(s) — proposing rebuild (conf=%.2f)",
+            len(cleaned),
+            confidence,
+            frame=bot.state.game_loop,
+        )
+
+        return BuildingIdea(
+            building_module=self,
+            action=BuildingAction.TRAIN,
+            confidence=confidence,
+            evidence=evidence,
+            train_type=UnitID.HATCHERY,
+        )
+
+    def execute(self, building, idea, bot) -> bool:
+        lost = getattr(bot, '_lost_hatchery_positions', [])
+        if not lost:
+            return False
+
+        lost_pos = lost.pop(0)
+        bot._lost_hatchery_positions = lost
+
+        order = ConstructionOrder(
+            structure_type=UnitID.HATCHERY,
+            base_location=lost_pos,
+            priority=90,
+            created_frame=bot.state.game_loop,
+        )
+
+        accepted = bot.construction_queue.enqueue(order)
+        if accepted:
+            log.game_event(
+                "REBUILD_ENQUEUED",
+                f"HATCHERY rebuild at {lost_pos}",
+                frame=bot.state.game_loop,
+            )
+        else:
+            log.warning(
+                "ZergHatcheryRebuildTactic: queue rejected rebuild at %s — re-inserting",
+                lost_pos,
+                frame=bot.state.game_loop,
+            )
+            bot._lost_hatchery_positions.insert(0, lost_pos)
+
+        return accepted
 
 
 class ZergStructureBuildTactic(BuildingTacticModule):

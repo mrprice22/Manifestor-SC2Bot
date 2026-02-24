@@ -41,6 +41,7 @@ from ManifestorBot.manifests.tactics.building_tactics import (
     ZergQueenProductionTactic,
     ZergGasWorkerTactic,
     ZergTechMorphTactic,
+    ZergHatcheryRebuildTactic,
 )
 from ManifestorBot.manifests.tactics.queen_tactics import (
     QueenInjectTactic,
@@ -127,9 +128,15 @@ class ManifestorBot(AresBot):
         
         # Suppressed ideas tracker (prevents spam)
         self.suppressed_ideas: Dict[int, int] = {}  # unit_tag -> frame_last_suppressed
-    
+
+        # Positions of destroyed townhalls pending rebuild
+        self._lost_hatchery_positions: list = []
+
         # Pheromone map
         self.pheromone_map: Optional[PheromoneMap] = None
+
+        # Resource pressure manager (overbanking guard)
+        self.resource_pressure: Optional['ResourcePressureManager'] = None
         
         # Chat commentary settings
         self.commentary_enabled: bool = True
@@ -160,7 +167,12 @@ class ManifestorBot(AresBot):
         # Load all tactic modules
         self._load_tactic_modules()
         self._load_building_modules()
-        
+
+        # Initialise resource pressure manager
+        from ManifestorBot.manifests.resource_pressure import ResourcePressureManager
+        self.resource_pressure = ResourcePressureManager()
+        log.info("ResourcePressureManager initialised")
+
         # Register unit abilities
         register_worker_abilities()
         register_construction_abilities()
@@ -541,6 +553,19 @@ class ManifestorBot(AresBot):
             frame=getattr(getattr(self, "state", None), "game_loop", None),
         )
 
+    async def on_unit_destroyed(self, unit_tag: int) -> None:
+        """Track destroyed townhalls for rebuild logic."""
+        await super().on_unit_destroyed(unit_tag)
+        dead_unit = self._all_units_previous_map.get(unit_tag)
+        if dead_unit is not None:
+            if dead_unit.type_id in {UnitID.HATCHERY, UnitID.LAIR, UnitID.HIVE}:
+                self._lost_hatchery_positions.append(dead_unit.position)
+                log.game_event(
+                    "HATCH_LOST",
+                    f"{dead_unit.type_id.name} destroyed at {dead_unit.position}",
+                    frame=self.state.game_loop,
+                )
+
     def _load_building_modules(self) -> None:
         """
         Register all building tactic modules in priority order.
@@ -562,6 +587,7 @@ class ManifestorBot(AresBot):
             ZergWorkerProductionTactic(),  # Workers after army is seeded
             ZergUpgradeResearchTactic(),   # Upgrades when affordable
             ZergTechMorphTactic(),         # Hatchery → Lair → Hive tech progression
+            ZergHatcheryRebuildTactic(),   # Rebuild destroyed hatcheries (priority 90 > expand 80)
             ZergStructureBuildTactic(),    # Build structures when needed
             ZergGasWorkerTactic(),         # Ensure gas workers are always assigned
         ]
