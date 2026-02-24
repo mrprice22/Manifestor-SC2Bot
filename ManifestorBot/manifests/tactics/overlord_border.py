@@ -109,6 +109,7 @@ class OverlordBorderTactic(TacticModule):
         assigned_slot = (
             border_map._assignments.get(unit.tag)
             or border_map._scout_assignments.get(unit.tag)
+            or border_map._rear_guard_assignments.get(unit.tag)
         )
         if assigned_slot is not None:
             if unit.distance_to(assigned_slot) <= self.ON_STATION_DISTANCE:
@@ -136,6 +137,17 @@ class OverlordBorderTactic(TacticModule):
             evidence['overlord_in_danger'] = round(-sig, 3)
 
         if confidence < 0.40:
+            # Retreat to nearest rear-guard slot instead of doing nothing
+            retreat_slot = self._nearest_rear_guard(unit, border_map)
+            if retreat_slot is not None:
+                evidence['retreat'] = True
+                border_map.assign_rear_guard(unit.tag, retreat_slot)
+                return TacticIdea(
+                    tactic_module=self,
+                    confidence=0.60,
+                    evidence=evidence,
+                    target=retreat_slot,
+                )
             return None
 
         # --- decide pool: scout vs creep-edge sentinel ---
@@ -196,7 +208,14 @@ class OverlordBorderTactic(TacticModule):
         # release the assignment and return None gracefully
         border_map = getattr(bot, 'territory_border_map', None)
         if border_map is not None:
-            if slot not in border_map.watch_slots and slot not in border_map.scout_slots:
+            rg_slots = getattr(border_map, 'rear_guard_slots', [])
+            valid = (
+                slot in border_map.watch_slots
+                or slot in border_map.scout_slots
+                or slot in rg_slots
+                or idea.evidence.get('retreat', False)
+            )
+            if not valid:
                 border_map.release(unit.tag)
                 return None
 
@@ -254,6 +273,15 @@ class OverlordBorderTactic(TacticModule):
             if slot is not None:
                 return slot, True
 
+        # --- Fall back to rear-guard reserve slot ---
+        rg_slots = getattr(border_map, 'rear_guard_slots', [])
+        if rg_slots:
+            uncovered_rg = border_map.get_uncovered_rear_guard_slots()
+            slot = self._pick_from_pool(unit, bot, uncovered_rg)
+            if slot is not None:
+                border_map.assign_rear_guard(unit.tag, slot)
+                return slot, False  # treated as sentinel (not scout)
+
         return None, False
 
     def _pick_from_pool(
@@ -272,3 +300,14 @@ class OverlordBorderTactic(TacticModule):
         if not safe_slots:
             return None
         return min(safe_slots, key=lambda s: unit.distance_to(s))
+
+    def _nearest_rear_guard(
+        self,
+        unit: Unit,
+        border_map,
+    ) -> Optional[Point2]:
+        """Return the nearest rear-guard slot, or None if none available."""
+        slots = getattr(border_map, 'rear_guard_slots', [])
+        if not slots:
+            return None
+        return min(slots, key=lambda s: unit.distance_to(s))

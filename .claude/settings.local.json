@@ -9,7 +9,8 @@
       "Bash(grep:*)",
       "Bash(python:*)",
       "Bash(py -3 -c \"from ManifestorBot.manifests.resource_pressure import ResourcePressureManager; print\\('resource_pressure OK'\\)\" 2>&1 && py -3 -c \"from ManifestorBot.manifests.tactics.building_tactics import ZergHatcheryRebuildTactic, ZergArmyProductionTactic; print\\('building_tactics OK'\\)\" 2>&1)",
-      "Bash(py:*)"
+      "Bash(py:*)",
+      "Bash(find:*)"
     ]
   }
 }

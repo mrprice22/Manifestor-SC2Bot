@@ -294,7 +294,7 @@ class ZergArmyProductionTactic(BuildingTacticModule):
         evidence: dict = {}
 
         # Determine which unit we'd want to train
-        train_type = self._pick_unit(building, bot, current_strategy, heuristics)
+        train_type = self._pick_unit(building, bot, current_strategy, heuristics, counter_ctx)
         if train_type is None:
             log.debug(
                 "ZergArmyProductionTactic: no affordable/available unit for %s",
@@ -373,6 +373,11 @@ class ZergArmyProductionTactic(BuildingTacticModule):
                     confidence = max(confidence, 0.92)
                     evidence['panic_mode'] = 0.92
 
+            # Sub-signal: counter-play production bonus
+            if counter_ctx and counter_ctx.production_bonus > 0:
+                confidence += counter_ctx.production_bonus
+                evidence['counter_bonus'] = round(counter_ctx.production_bonus, 3)
+
             log.debug(
                 "ZergArmyProductionTactic: confidence=%.3f (base=%.2f agg=%.2f "
                 "behind=%.2f float=%.2f mineral_pressure=%.3f) train=%s avr=%.2f",
@@ -404,6 +409,7 @@ class ZergArmyProductionTactic(BuildingTacticModule):
         bot: "ManifestorBot",
         current_strategy: "Strategy",
         heuristics: "HeuristicState",
+        counter_ctx=None,
     ) -> Optional[UnitID]:
         """
         Return the best unit type to train, preferring composition targets if available.
@@ -411,7 +417,30 @@ class ZergArmyProductionTactic(BuildingTacticModule):
         FIX: Previously just returned the first affordable unit in priority order,
         which meant zerglings were always chosen over roaches even when we needed roaches.
         Now checks composition targets and picks the most-underrepresented affordable type.
+
+        Counter-play override: if scout ledger prescribes specific units, try those first.
         """
+        # Counter-play override: if scout ledger prescribes specific units, try those first
+        if counter_ctx and counter_ctx.priority_train_types:
+            for unit_type in counter_ctx.priority_train_types:
+                # Check this unit can be trained from this building
+                can_train = any(
+                    structure == building.type_id
+                    for u, structure in _ARMY_PRIORITY
+                    if u == unit_type
+                )
+                if not can_train:
+                    continue
+                if not bot.can_afford(unit_type):
+                    continue
+                if bot.tech_requirement_progress(unit_type) < 1.0:
+                    continue
+                log.debug(
+                    "ZergArmyProductionTactic: counter-prescribed pick=%s",
+                    unit_type.name, frame=bot.state.game_loop,
+                )
+                return unit_type
+
         profile = current_strategy.profile()
         target = profile.active_composition(heuristics.game_phase)
 
@@ -598,6 +627,11 @@ class ZergUpgradeResearchTactic(BuildingTacticModule):
         confidence = 0.75
         evidence = {"upgrade": upgrade.name}
 
+        # Counter-driven research bonus
+        if counter_ctx and counter_ctx.research_bonus > 0:
+            confidence += counter_ctx.research_bonus
+            evidence['counter_research_bonus'] = round(counter_ctx.research_bonus, 3)
+
         log.debug(
             "ZergUpgradeResearchTactic: %s → researching %s (conf=%.2f)",
             building.type_id.name,
@@ -615,6 +649,29 @@ class ZergUpgradeResearchTactic(BuildingTacticModule):
         )
 
     def _pick_upgrade(self, building: "Unit", bot: "ManifestorBot", counter_ctx: "CounterContext") -> Optional[UpgradeId]:
+        # Counter-prescribed upgrades get priority
+        if counter_ctx and counter_ctx.priority_upgrades:
+            for upgrade in counter_ctx.priority_upgrades:
+                # Check if this building can research this upgrade
+                match = any(
+                    u == upgrade and s == building.type_id
+                    for u, s in _UPGRADE_PRIORITY
+                )
+                if not match:
+                    continue
+                if self._already_researched(upgrade, bot):
+                    continue
+                if self._is_being_researched(upgrade, bot):
+                    continue
+                if not self._can_afford_research(upgrade, bot):
+                    continue
+                log.debug(
+                    "ZergUpgradeResearchTactic: counter-prescribed %s",
+                    upgrade.name, frame=bot.state.game_loop,
+                )
+                return upgrade
+
+        # Fall through to normal priority list
         for upgrade, structure_type in _UPGRADE_PRIORITY:
             if building.type_id != structure_type:
                 continue
@@ -866,6 +923,19 @@ class ZergHatcheryRebuildTactic(BuildingTacticModule):
         return accepted
 
 
+# Maps counter-prescribed unit types to the structures needed to produce them.
+# (structure_to_build, prerequisite_structure, min_minerals)
+_UNIT_TO_STRUCTURE: dict[UnitID, tuple[UnitID, UnitID | None, int]] = {
+    UnitID.HYDRALISK:  (UnitID.HYDRALISKDEN,    UnitID.LAIR,           100),
+    UnitID.CORRUPTOR:  (UnitID.SPIRE,           UnitID.LAIR,           200),
+    UnitID.MUTALISK:   (UnitID.SPIRE,           UnitID.LAIR,           200),
+    UnitID.LURKERMP:   (UnitID.LURKERDENMP,     UnitID.HYDRALISKDEN,   100),
+    UnitID.BANELING:   (UnitID.BANELINGNEST,    UnitID.SPAWNINGPOOL,   100),
+    UnitID.ULTRALISK:  (UnitID.ULTRALISKCAVERN, UnitID.HIVE,           150),
+    UnitID.ROACH:      (UnitID.ROACHWARREN,     UnitID.SPAWNINGPOOL,   150),
+}
+
+
 class ZergStructureBuildTactic(BuildingTacticModule):
     '''
     Decides when to build a new Zerg structure and enqueues a ConstructionOrder.
@@ -918,6 +988,35 @@ class ZergStructureBuildTactic(BuildingTacticModule):
         )
         if not opening_done:
             return None
+
+        # Counter-driven structure urgency: if the counter table wants units that
+        # require structures we don't have, try to build those structures first.
+        if counter_ctx and counter_ctx.priority_train_types:
+            urgent_structure = self._counter_structure_need(bot, counter_ctx)
+            if urgent_structure is not None:
+                structure_type, prereq, min_minerals = urgent_structure
+                # Check prerequisite
+                can_build = True
+                if prereq and not bot.structures(prereq).ready:
+                    can_build = False  # Can't build yet — fall through to normal priority
+                if can_build and bot.minerals >= min_minerals:
+                    existing = bot.structures(structure_type).amount
+                    pending = bot.construction_queue.count_active_of_type(structure_type)
+                    max_allowed = _max_for_structure(structure_type, bot)
+                    if existing + pending < max_allowed:
+                        confidence = 0.88  # above normal 0.80, below queen 0.97
+                        evidence = {"counter_structure": structure_type.name, "urgent": True}
+                        log.info(
+                            "ZergStructureBuildTactic: COUNTER-URGENT %s (conf=%.2f)",
+                            structure_type.name, confidence, frame=bot.state.game_loop,
+                        )
+                        return BuildingIdea(
+                            building_module=self,
+                            action=BuildingAction.TRAIN,
+                            confidence=confidence,
+                            evidence=evidence,
+                            train_type=structure_type,
+                        )
 
         for structure_type, prerequisite, min_minerals in _STRUCTURE_PRIORITY:
             # ── Hard cap on structure count ────────────────────────────
@@ -1168,6 +1267,24 @@ class ZergStructureBuildTactic(BuildingTacticModule):
             train_type=UnitID.HATCHERY,
         )
 
+    def _counter_structure_need(self, bot, counter_ctx):
+        """
+        Check if counter-prescribed units need a structure we don't have yet.
+        Returns (structure_type, prereq, min_minerals) or None.
+        """
+        for unit_type in counter_ctx.priority_train_types:
+            entry = _UNIT_TO_STRUCTURE.get(unit_type)
+            if entry is None:
+                continue
+            structure_type, prereq, min_minerals = entry
+            # Only suggest if we don't already have this structure
+            if bot.structures(structure_type).ready or bot.structures(structure_type).not_ready:
+                continue
+            if bot.construction_queue.count_active_of_type(structure_type) > 0:
+                continue
+            return entry
+        return None
+
 
 # ---------------------------------------------------------------------------
 # 5. Queen Production
@@ -1392,10 +1509,11 @@ class ZergQueenProductionTactic(BuildingTacticModule):
 # ---------------------------------------------------------------------------
 
 # Train an Overlord when supply headroom drops below this threshold.
-_OVERLORD_SUPPLY_THRESHOLD: int = 4  #TODO: build this into the strategy profiles
+_OVERLORD_SUPPLY_THRESHOLD: int = 12  # was 4 — start building overlords earlier
+                                      #TODO: build this into the strategy profiles
 
-# Maximum overlords pending at once — don't over-train.
-_MAX_PENDING_OVERLORDS: int = 1
+# Maximum overlords pending at once — allow 2 concurrent to break 80→200 supply faster.
+_MAX_PENDING_OVERLORDS: int = 2  # was 1
 
 
 class ZergOverlordProductionTactic(BuildingTacticModule):

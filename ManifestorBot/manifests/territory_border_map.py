@@ -80,6 +80,9 @@ class BorderConfig:
     # (the rest go to creep-edge sentinel positions).
     max_scout_slots: int = 2
 
+    # How many overlords are kept behind our base as reserves.
+    max_rear_guard_slots: int = 3
+
 
 # ---------------------------------------------------------------------------
 # Main class
@@ -115,6 +118,12 @@ class TerritoryBorderMap:
 
         # Scout overlord → slot assignments
         self._scout_assignments: dict[int, Point2] = {}
+
+        # Rear-guard slots (behind our main base, for reserves)
+        self._rear_guard_slots: list[Point2] = []
+
+        # Rear-guard overlord → slot assignments
+        self._rear_guard_assignments: dict[int, Point2] = {}
 
         # Frame of last full recompute
         self._last_recompute: int = -9999
@@ -163,6 +172,7 @@ class TerritoryBorderMap:
         """Remove the assignment for this overlord (called when it dies)."""
         self._assignments.pop(overlord_tag, None)
         self._scout_assignments.pop(overlord_tag, None)
+        self._rear_guard_assignments.pop(overlord_tag, None)
 
     # --- Scout slot API ---
 
@@ -192,6 +202,29 @@ class TerritoryBorderMap:
     def scout_assignment_count(self) -> int:
         """How many overlords currently have a scout assignment."""
         return len(self._scout_assignments)
+
+    # --- Rear-guard slot API ---
+
+    @property
+    def rear_guard_slots(self) -> list[Point2]:
+        """All current rear-guard positions (behind main base)."""
+        return list(self._rear_guard_slots)
+
+    def assign_rear_guard(self, overlord_tag: int, slot: Point2) -> None:
+        """Record that this overlord has been sent to a rear-guard slot."""
+        self._rear_guard_assignments[overlord_tag] = slot
+
+    def release_rear_guard(self, overlord_tag: int) -> None:
+        """Remove the rear-guard assignment for this overlord."""
+        self._rear_guard_assignments.pop(overlord_tag, None)
+
+    def get_uncovered_rear_guard_slots(self) -> list[Point2]:
+        """Return rear-guard slots that have no overlord currently assigned."""
+        covered_positions = {
+            slot for slot in self._rear_guard_slots
+            if self._slot_is_covered_in(slot, self._rear_guard_assignments)
+        }
+        return [s for s in self._rear_guard_slots if s not in covered_positions]
 
     def is_covered(self, slot: Point2) -> bool:
         """Return True if an overlord is on-station at this slot."""
@@ -253,14 +286,44 @@ class TerritoryBorderMap:
             # Cap to max_scout_slots
             self._scout_slots = scout_slots[: self.cfg.max_scout_slots]
 
+            # --- Rear-guard reserve slots (behind our main) ---
+            self._compute_rear_guard_slots(
+                creep_slots + scout_slots  # use all ring points as candidates
+            )
+
             log.info(
-                "Watch ring recomputed: %d creep-edge slots, %d scout slots",
-                len(self._watch_slots), len(self._scout_slots),
+                "Watch ring recomputed: %d creep-edge slots, %d scout slots, %d rear-guard slots",
+                len(self._watch_slots), len(self._scout_slots), len(self._rear_guard_slots),
             )
 
         except Exception as e:
             log.error("_recompute_watch_ring: failed: %s", e)
             
+
+    def _compute_rear_guard_slots(self, all_ring_points: list[Point2]) -> None:
+        """Pick safe positions behind main for overlord reserves."""
+        start = self.bot.start_location
+        enemy_start = (
+            self.bot.enemy_start_locations[0]
+            if self.bot.enemy_start_locations
+            else start
+        )
+        base_to_enemy = start.distance_to(enemy_start)
+
+        # Rear = farther from enemy than our base
+        rear = [p for p in all_ring_points if p.distance_to(enemy_start) > base_to_enemy]
+        if not rear:
+            # Fallback: position near our main
+            rear = [start.towards(start, 8)]
+
+        # Thin to max count with spacing
+        selected: list[Point2] = []
+        for p in sorted(rear, key=lambda p: p.distance_to(start)):
+            if len(selected) >= self.cfg.max_rear_guard_slots:
+                break
+            if all(p.distance_to(s) >= self.cfg.slot_spacing for s in selected):
+                selected.append(p)
+        self._rear_guard_slots = selected
 
     def _fallback_unexplored_edge_slots(self) -> list[Point2]:
         """
@@ -473,6 +536,7 @@ class TerritoryBorderMap:
         )}
         self._validate_pool(self._assignments, self._watch_slots, live_tags)
         self._validate_pool(self._scout_assignments, self._scout_slots, live_tags)
+        self._validate_pool(self._rear_guard_assignments, self._rear_guard_slots, live_tags)
 
     def _validate_pool(
         self,
@@ -553,11 +617,17 @@ class TerritoryBorderMap:
     def summary(self) -> str:
         watch_covered = sum(1 for s in self._watch_slots if self._slot_is_covered(s))
         scout_covered = sum(1 for s in self._scout_slots if self._slot_is_covered(s))
+        rg_covered = sum(
+            1 for s in self._rear_guard_slots
+            if self._slot_is_covered_in(s, self._rear_guard_assignments)
+        )
         return (
             f"TerritoryBorderMap: {len(self._watch_slots)} creep-edge ({watch_covered} covered, "
             f"{len(self._assignments)} assigned) | "
             f"{len(self._scout_slots)} scout ({scout_covered} covered, "
-            f"{len(self._scout_assignments)} assigned)"
+            f"{len(self._scout_assignments)} assigned) | "
+            f"{len(self._rear_guard_slots)} rear-guard ({rg_covered} covered, "
+            f"{len(self._rear_guard_assignments)} assigned)"
         )
 
 
