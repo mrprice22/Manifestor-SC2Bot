@@ -10,6 +10,19 @@ This keeps the relationship clean:
   - Adding a new strategy = define its TacticalProfile
   - Adding a new tactic = consume the relevant bias fields
   - No combinatorial if/else chains anywhere
+
+Zerg unit roster across strategies
+-----------------------------------
+Ground:  ZERGLING, BANELING, ROACH, RAVAGER, HYDRALISK, LURKERMP,
+         INFESTOR, SWARMHOSTMP, ULTRALISK, QUEEN
+Air:     MUTALISK, CORRUPTOR, BROODLORD, VIPER
+
+Tech phase landmarks (approximate game_phase values)
+  0.00  early    – pool up, queens, ling speed underway
+  0.25  mid-early– roach warren + first gas units
+  0.30  mid      – lair complete; hydras, mutas, ravagers online
+  0.50  mid-late – lurker den, infest pit, hive started
+  0.70  late     – hive army: ultra, viper, greater spire unlocked
 """
 
 from dataclasses import dataclass
@@ -22,14 +35,14 @@ from enum import Enum
 class CompositionTarget:
     """
     A desired army composition at a specific game phase.
-    
+
     ratios: What fraction of total army supply each unit type should occupy.
            Doesn't need to sum to 1.0 — anything unnormalized works.
            "ZERGLING: 0.5, ROACH: 0.3" means "more zerglings than roaches"
-    
+
     army_supply_target: How many supply of combat units we want at this phase.
                         Drives *scale*, not composition.
-    
+
     max_hatcheries: Expansion cap at this phase.
     """
     ratios: dict[UnitID, float]
@@ -71,7 +84,7 @@ class TacticalProfile:
     composition_curve: list[tuple[float, CompositionTarget]] = field(
         default_factory=list
     )
-    
+
     # Returns the active CompositionTarget for the given game phase.
     def active_composition(self, game_phase: float) -> Optional[CompositionTarget]:
         active = None
@@ -139,11 +152,14 @@ class Strategy(Enum):
 # ------------------------------------------------------------------ #
 # Profile definitions — one per strategy
 # Keeping these outside the enum body avoids forward-reference issues.
-# All curves share the same phase band structure:
-#   0.00  early  (pool/nat, queens, lings)
-#   0.30  mid    (lair complete, first tech units, lurkers possible)
-#   0.55  late   (hive started, vipers, brood lords unlock)
-#   0.75  supreme late (hive army, full upgrades, maxing)
+#
+# Phase band structure used throughout:
+#   0.00  early      (pool/nat, queens, lings, ling speed)
+#   0.25+ mid-early  (roach warren, ravagers, banelings come online)
+#   0.28+ mid        (lair complete; mutas, hydras available)
+#   0.30+ mid        (lair + first tier-2 ground tech)
+#   0.48+ mid-late   (lurker den, infest pit, hive underway)
+#   0.70+ late       (hive army: ultra, viper, greater spire → broodlords)
 # ------------------------------------------------------------------ #
 
 _PROFILES: dict[Strategy, TacticalProfile] = {
@@ -151,8 +167,9 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
     # ─────────────────────────────────────────────────────────────────────────────
     # JUST_GO_PUNCH_EM
     # Philosophy: roach/ling flood as fast as possible, transition into ravagers
-    # and then lurkers to crack static defence. No mutas — no time for air.
-    # Late game is irrelevant: we should have won or lost.
+    # for corrosive bile and lurkers to crack static defence.
+    # Banelings shred bio; ravagers handle walls and bunkers.
+    # Late game is gravy: ultralisk/viper closes it out if we're still going.
     # ─────────────────────────────────────────────────────────────────────────────
     Strategy.JUST_GO_PUNCH_EM: TacticalProfile(
         engage_bias   = +0.35,
@@ -165,25 +182,28 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
-                    UnitID.QUEEN:    0.20,
-                    UnitID.ZERGLING: 0.80,   # mass lings, go now
+                    UnitID.QUEEN:    0.15,
+                    UnitID.ZERGLING: 0.85,   # mass lings, go now
                 },
                 army_supply_target=24,
                 max_hatcheries=2,
             )),
             (0.25, CompositionTarget(
                 ratios={
-                    UnitID.ZERGLING: 0.40,
-                    UnitID.ROACH:    0.60,   # roach backbone
+                    UnitID.ZERGLING: 0.35,
+                    UnitID.BANELING: 0.15,   # banelings shred bio armies
+                    UnitID.ROACH:    0.35,   # roach backbone
+                    UnitID.RAVAGER:  0.15,   # bile for walls / bunkers
                 },
                 army_supply_target=60,
                 max_hatcheries=3,
             )),
             (0.45, CompositionTarget(
                 ratios={
-                    UnitID.ROACH:    0.50,
-                    UnitID.RAVAGER:  0.20,   # bile for walls / corrosive
+                    UnitID.ROACH:    0.35,
+                    UnitID.RAVAGER:  0.20,   # corrosive bile on static defence
                     UnitID.LURKERMP: 0.30,   # siege support
+                    UnitID.BANELING: 0.15,   # ling-bane flanks
                 },
                 army_supply_target=100,
                 max_hatcheries=4,
@@ -192,7 +212,8 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
                 ratios={
                     UnitID.ULTRALISK: 0.30,  # if we're still going, go big
                     UnitID.LURKERMP:  0.35,
-                    UnitID.ROACH:     0.35,
+                    UnitID.VIPER:     0.10,  # blinding cloud, abduct colossi/thors
+                    UnitID.ROACH:     0.25,
                 },
                 army_supply_target=150,
                 max_hatcheries=5,
@@ -203,8 +224,9 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
 
     # ─────────────────────────────────────────────────────────────────────────────
     # ALL_IN
-    # Philosophy: everything committed right now. Hard ling-roach all-in.
-    # No transition plan. max_hatcheries stays low — resources go to units.
+    # Philosophy: everything committed right now. Hard ling-bane-roach all-in.
+    # Banelings are the key bio-killer. Ravagers handle mineral lines and ramps.
+    # No transition plan — resources go to units, not infrastructure.
     # ─────────────────────────────────────────────────────────────────────────────
     Strategy.ALL_IN: TacticalProfile(
         engage_bias   = +0.45,
@@ -225,17 +247,19 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
             )),
             (0.20, CompositionTarget(
                 ratios={
-                    UnitID.ZERGLING: 0.35,
-                    UnitID.ROACH:    0.65,   # roach-ling all-in
+                    UnitID.ZERGLING: 0.30,
+                    UnitID.BANELING: 0.20,   # ling-bane all-in vs bio
+                    UnitID.ROACH:    0.50,   # roach wall-punch
                 },
                 army_supply_target=80,
                 max_hatcheries=3,
             )),
             (0.40, CompositionTarget(
                 ratios={
-                    UnitID.ROACH:    0.50,
-                    UnitID.RAVAGER:  0.30,
-                    UnitID.ZERGLING: 0.20,
+                    UnitID.ROACH:    0.40,
+                    UnitID.RAVAGER:  0.35,   # ravagers break fortified positions
+                    UnitID.BANELING: 0.10,
+                    UnitID.ZERGLING: 0.15,
                 },
                 army_supply_target=120,
                 max_hatcheries=3,   # still low — go, don't drone
@@ -248,9 +272,10 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
 
     # ─────────────────────────────────────────────────────────────────────────────
     # KEEP_EM_BUSY
-    # Philosophy: constant multi-angle pressure. Mutas are ideal here —
-    # mobile, harass-capable, force defensive splits from opponent.
-    # Lurkers back the mid-game to hold map without full commitment.
+    # Philosophy: constant multi-angle pressure. Mutas force defensive splits.
+    # Hydras back them up for anti-air and mobile ground response.
+    # Lurkers hold map positions while mutas roam. Late: corruptors into broodlords
+    # so the siege never stops.
     # ─────────────────────────────────────────────────────────────────────────────
     Strategy.KEEP_EM_BUSY: TacticalProfile(
         engage_bias   = +0.20,
@@ -270,18 +295,20 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
             )),
             (0.28, CompositionTarget(
                 ratios={
-                    UnitID.ZERGLING:  0.30,
-                    UnitID.ROACH:     0.20,
-                    UnitID.MUTALISK:  0.50,  # muta harassment pack
+                    UnitID.ZERGLING:  0.25,
+                    UnitID.ROACH:     0.15,
+                    UnitID.HYDRALISK: 0.15,  # anti-air + ground support
+                    UnitID.MUTALISK:  0.45,  # muta harassment pack
                 },
                 army_supply_target=55,
                 max_hatcheries=4,
             )),
             (0.50, CompositionTarget(
                 ratios={
-                    UnitID.MUTALISK:  0.30,
-                    UnitID.LURKERMP:  0.30,  # ground harassment + siege
-                    UnitID.ROACH:     0.25,
+                    UnitID.MUTALISK:  0.25,
+                    UnitID.HYDRALISK: 0.20,  # hydra-lurker ground backbone
+                    UnitID.LURKERMP:  0.25,  # siege + multi-angle pressure
+                    UnitID.ROACH:     0.15,
                     UnitID.ZERGLING:  0.15,
                 },
                 army_supply_target=90,
@@ -289,10 +316,11 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
             )),
             (0.72, CompositionTarget(
                 ratios={
-                    UnitID.VIPER:        0.15,  # pull, blinding cloud
-                    UnitID.BROODLORD:    0.25,
-                    UnitID.LURKERMP:     0.35,
-                    UnitID.MUTALISK:     0.25,
+                    UnitID.VIPER:     0.10,  # abduct, blinding cloud
+                    UnitID.CORRUPTOR: 0.20,  # anti-massive; morphs into broodlords
+                    UnitID.BROODLORD: 0.20,  # permanent creep-push siege
+                    UnitID.LURKERMP:  0.30,
+                    UnitID.MUTALISK:  0.20,
                 },
                 army_supply_target=140,
                 max_hatcheries=6,
@@ -304,8 +332,9 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
     # ─────────────────────────────────────────────────────────────────────────────
     # WAR_ON_SANITY
     # Philosophy: everything, everywhere, all at once. Mutas for drops and
-    # harass, lings for runbys, lurkers to hold map positions simultaneously.
-    # Opponent can't be everywhere. We don't need to win any single fight.
+    # harass, banelings for ling runbys, lurkers to hold map positions, infestors
+    # for fungal chaos. Opponent can't be everywhere. We don't need to win any
+    # single fight — we need them to lose all of them simultaneously.
     # ─────────────────────────────────────────────────────────────────────────────
     Strategy.WAR_ON_SANITY: TacticalProfile(
         engage_bias   = +0.25,
@@ -325,29 +354,32 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
             )),
             (0.28, CompositionTarget(
                 ratios={
-                    UnitID.ZERGLING: 0.35,
-                    UnitID.MUTALISK: 0.40,   # muta pack for chaos
-                    UnitID.ROACH:    0.25,
+                    UnitID.ZERGLING: 0.20,
+                    UnitID.BANELING: 0.15,   # ling-bane runbys everywhere
+                    UnitID.MUTALISK: 0.35,   # muta pack for chaos
+                    UnitID.ROACH:    0.30,
                 },
                 army_supply_target=60,
                 max_hatcheries=4,
             )),
             (0.48, CompositionTarget(
                 ratios={
-                    UnitID.MUTALISK:  0.30,
-                    UnitID.LURKERMP:  0.25,
-                    UnitID.ZERGLING:  0.25,
-                    UnitID.ROACH:     0.20,
+                    UnitID.MUTALISK:  0.25,
+                    UnitID.LURKERMP:  0.25,  # siege multiple map positions
+                    UnitID.INFESTOR:  0.15,  # fungal on clumped armies
+                    UnitID.ZERGLING:  0.20,
+                    UnitID.ROACH:     0.15,
                 },
                 army_supply_target=95,
                 max_hatcheries=5,
             )),
             (0.70, CompositionTarget(
                 ratios={
-                    UnitID.BROODLORD: 0.20,
-                    UnitID.VIPER:     0.15,
+                    UnitID.BROODLORD: 0.15,  # creep-push siege
+                    UnitID.CORRUPTOR: 0.10,  # anti-massive + broodlord supply
+                    UnitID.VIPER:     0.15,  # pull, blinding cloud, caustic spray
                     UnitID.LURKERMP:  0.30,
-                    UnitID.MUTALISK:  0.20,
+                    UnitID.MUTALISK:  0.15,
                     UnitID.ZERGLING:  0.15,  # ling runbys still relevant
                 },
                 army_supply_target=150,
@@ -359,53 +391,57 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
 
     # ─────────────────────────────────────────────────────────────────────────────
     # STOCK_STANDARD
-    # Philosophy: textbook Zerg macro. Roach-ling-bane mid, lurker transition,
-    # hive tech late. No mutas — solid predictable execution.
+    # Philosophy: textbook Zerg macro. Ling-bane-roach-ravager mid game for
+    # flexible response; lurker/hydra transition once lair and den are up;
+    # ultra-viper-infestor hive army to close. Solid and predictable execution.
     # ─────────────────────────────────────────────────────────────────────────────
     Strategy.STOCK_STANDARD: TacticalProfile(
-        engage_bias   = 0.1,
-        retreat_bias  = 0.1,
-        harass_bias   = 0.1,
-        cohesion_bias = 0.1,
+        engage_bias   = 0.0,
+        retreat_bias  = 0.0,
+        harass_bias   = 0.0,
+        cohesion_bias = 0.0,
         hold_bias     = 0.0,
         sacrifice_ok  = False,
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
-                    UnitID.QUEEN:    0.40,
-                    UnitID.ZERGLING: 0.60,
-                    UnitID.BANELING: 0.20,
+                    UnitID.QUEEN:    0.35,
+                    UnitID.ZERGLING: 0.50,
+                    UnitID.BANELING: 0.15,   # early bio answer
                 },
                 army_supply_target=20,
                 max_hatcheries=2,
             )),
             (0.30, CompositionTarget(
                 ratios={
-                    UnitID.QUEEN:    0.15,
-                    UnitID.ZERGLING: 0.30,
-                    UnitID.ROACH:    0.55,
-                    UnitID.BANELING: 0.20,
+                    UnitID.QUEEN:    0.10,
+                    UnitID.ZERGLING: 0.20,
+                    UnitID.BANELING: 0.15,
+                    UnitID.ROACH:    0.40,
+                    UnitID.RAVAGER:  0.15,   # corrosive bile on bio clumps/walls
                 },
-                army_supply_target=60,
+                army_supply_target=80,
                 max_hatcheries=4,
             )),
             (0.50, CompositionTarget(
                 ratios={
-                    UnitID.ROACH:    0.40,
-                    UnitID.LURKERMP: 0.40,
-                    UnitID.ZERGLING: 0.20,
+                    UnitID.ROACH:     0.25,
+                    UnitID.HYDRALISK: 0.15,  # anti-air + harassment response
+                    UnitID.LURKERMP:  0.40,  # lurker core
+                    UnitID.ZERGLING:  0.20,  # surround assist
                 },
-                army_supply_target=100,
+                army_supply_target=120,
                 max_hatcheries=5,
             )),
             (0.72, CompositionTarget(
                 ratios={
-                    UnitID.ULTRALISK: 0.30,
-                    UnitID.LURKERMP:  0.35,
-                    UnitID.VIPER:     0.15,
-                    UnitID.ZERGLING:  0.20,  # surround assist
+                    UnitID.ULTRALISK: 0.30,  # tanky front-line
+                    UnitID.LURKERMP:  0.25,
+                    UnitID.VIPER:     0.15,  # parasitic bond, blinding cloud
+                    UnitID.INFESTOR:  0.15,  # fungal + neural parasite
+                    UnitID.ZERGLING:  0.15,  # surround fill
                 },
-                army_supply_target=160,
+                army_supply_target=140,
                 max_hatcheries=6,
             )),
         ],
@@ -414,9 +450,10 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
 
     # ─────────────────────────────────────────────────────────────────────────────
     # WAR_OF_ATTRITION
-    # Philosophy: trade favorably, hold ground, let them come.
-    # Lurkers are perfect here — siege power without committing to attack.
-    # Late game: ultra/viper is the grind comp of choice.
+    # Philosophy: trade favorably, hold ground, let them come to us.
+    # Ravagers punish forward pushes with bile. Lurkers are the core — siege power
+    # without committing. Infestors + swarm hosts turn our lines into a meat grinder.
+    # Late: ultra/viper/lurker grinds down any sustained assault.
     # ─────────────────────────────────────────────────────────────────────────────
     Strategy.WAR_OF_ATTRITION: TacticalProfile(
         engage_bias   = -0.10,
@@ -436,7 +473,8 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
             )),
             (0.30, CompositionTarget(
                 ratios={
-                    UnitID.ROACH:    0.60,
+                    UnitID.ROACH:    0.45,
+                    UnitID.RAVAGER:  0.15,   # bile punishes enemy pushes
                     UnitID.QUEEN:    0.20,
                     UnitID.ZERGLING: 0.20,
                 },
@@ -445,19 +483,22 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
             )),
             (0.50, CompositionTarget(
                 ratios={
-                    UnitID.LURKERMP: 0.55,   # lurker core — let them die on us
-                    UnitID.ROACH:    0.30,
-                    UnitID.ZERGLING: 0.15,
+                    UnitID.LURKERMP:  0.45,  # lurker core — let them die on us
+                    UnitID.INFESTOR:  0.15,  # fungal locks armies in lurker range
+                    UnitID.ROACH:     0.25,
+                    UnitID.ZERGLING:  0.15,
                 },
                 army_supply_target=100,
                 max_hatcheries=5,
             )),
             (0.72, CompositionTarget(
                 ratios={
-                    UnitID.ULTRALISK: 0.35,
-                    UnitID.LURKERMP:  0.35,
-                    UnitID.VIPER:     0.20,  # parasitic bond, blinding cloud
-                    UnitID.ZERGLING:  0.10,
+                    UnitID.ULTRALISK:  0.25,  # unstoppable front-line
+                    UnitID.LURKERMP:   0.25,
+                    UnitID.VIPER:      0.20,  # parasitic bond, blinding cloud
+                    UnitID.SWARMHOSTMP:0.15,  # free locust waves = attrition heaven
+                    UnitID.INFESTOR:   0.10,  # fungal + neural on key targets
+                    UnitID.ZERGLING:   0.05,
                 },
                 army_supply_target=160,
                 max_hatcheries=6,
@@ -468,9 +509,11 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
 
     # ─────────────────────────────────────────────────────────────────────────────
     # BLEED_OUT
-    # Philosophy: never commit, always be harassing somewhere.
-    # Mutas are core to this strategy. Lurkers hold a defensive line while
-    # muta packs roam. Brood lords appear late to maintain the pressure siege.
+    # Philosophy: never commit to a decisive fight, always be harassing somewhere.
+    # Mutas are the core — roam constantly, drain resources and attention.
+    # Banelings supplement ling runbys into undefended expansions.
+    # Lurkers hold a defensive line while mutas roam. Brood lords + vipers appear
+    # late to siege without ever allowing a fair trade.
     # ─────────────────────────────────────────────────────────────────────────────
     Strategy.BLEED_OUT: TacticalProfile(
         engage_bias   = -0.20,
@@ -490,8 +533,9 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
             )),
             (0.28, CompositionTarget(
                 ratios={
-                    UnitID.MUTALISK:  0.55,  # muta roam starts immediately on lair
-                    UnitID.ZERGLING:  0.30,
+                    UnitID.MUTALISK:  0.45,  # muta roam starts immediately on lair
+                    UnitID.ZERGLING:  0.25,
+                    UnitID.BANELING:  0.15,  # runbys into undefended expansions
                     UnitID.ROACH:     0.15,  # minimal ground presence
                 },
                 army_supply_target=50,
@@ -499,8 +543,9 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
             )),
             (0.50, CompositionTarget(
                 ratios={
-                    UnitID.MUTALISK:  0.35,
-                    UnitID.LURKERMP:  0.35,  # defensive lurkers, muta still roam
+                    UnitID.MUTALISK:  0.30,
+                    UnitID.LURKERMP:  0.25,  # defensive lurkers, mutas still roam
+                    UnitID.INFESTOR:  0.15,  # fungal grounds fleeing units for mutas
                     UnitID.ZERGLING:  0.20,
                     UnitID.ROACH:     0.10,
                 },
@@ -509,10 +554,11 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
             )),
             (0.72, CompositionTarget(
                 ratios={
-                    UnitID.BROODLORD: 0.30,  # broodlords = permanent harassment siege
-                    UnitID.VIPER:     0.20,
-                    UnitID.LURKERMP:  0.30,
-                    UnitID.MUTALISK:  0.20,
+                    UnitID.BROODLORD: 0.25,  # permanent harassment siege
+                    UnitID.CORRUPTOR: 0.15,  # anti-massive; morphs into broodlords
+                    UnitID.VIPER:     0.20,  # abduct, blinding cloud, caustic spray
+                    UnitID.LURKERMP:  0.25,
+                    UnitID.MUTALISK:  0.15,
                 },
                 army_supply_target=150,
                 max_hatcheries=6,
@@ -523,10 +569,11 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
 
     # ─────────────────────────────────────────────────────────────────────────────
     # DRONE_ONLY_FORTRESS
-    # Philosophy: survive. Grow economy behind queens and static defence.
-    # Lurkers replace roaches as the primary defensive unit mid-game.
-    # If we reach late game intact, ultralisk/viper/broodlord should end it.
-    # No mutas — they require the economy risk of a Spire with no ground response.
+    # Philosophy: survive, grow economy behind queens and static defence.
+    # Hydras give early anti-air coverage. Lurkers replace roaches as primary
+    # defensive unit mid-game. Infestors + swarm hosts turn the fortress into a
+    # nightmare to assault. If we reach late game intact, ultra/viper/broodlord
+    # finally strikes back.
     # ─────────────────────────────────────────────────────────────────────────────
     Strategy.DRONE_ONLY_FORTRESS: TacticalProfile(
         engage_bias   = -0.45,
@@ -539,7 +586,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
-                    UnitID.QUEEN:    0.70,   # queens are the defence
+                    UnitID.QUEEN:    0.70,   # queens are the entire defence
                     UnitID.ZERGLING: 0.30,
                 },
                 army_supply_target=14,
@@ -547,28 +594,33 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
             )),
             (0.30, CompositionTarget(
                 ratios={
-                    UnitID.QUEEN:    0.30,
-                    UnitID.ROACH:    0.50,
-                    UnitID.ZERGLING: 0.20,
+                    UnitID.QUEEN:     0.25,
+                    UnitID.ROACH:     0.40,
+                    UnitID.HYDRALISK: 0.15,  # anti-air; answers early air harassment
+                    UnitID.ZERGLING:  0.20,
                 },
                 army_supply_target=40,
                 max_hatcheries=5,
             )),
             (0.50, CompositionTarget(
                 ratios={
-                    UnitID.LURKERMP: 0.60,   # static lurker lines
-                    UnitID.ROACH:    0.25,
-                    UnitID.QUEEN:    0.15,
+                    UnitID.LURKERMP:   0.45,  # static lurker lines at each choke
+                    UnitID.INFESTOR:   0.20,  # fungal locks pushes; neural key units
+                    UnitID.SWARMHOSTMP:0.15,  # free locust damage without risking army
+                    UnitID.ROACH:      0.15,
+                    UnitID.QUEEN:      0.05,
                 },
                 army_supply_target=80,
                 max_hatcheries=6,
             )),
             (0.72, CompositionTarget(
                 ratios={
-                    UnitID.ULTRALISK:  0.35,
-                    UnitID.BROODLORD:  0.30,  # now we finally strike
-                    UnitID.VIPER:      0.20,
+                    UnitID.ULTRALISK:  0.25,  # now we finally strike
+                    UnitID.BROODLORD:  0.20,  # siege from safety
+                    UnitID.CORRUPTOR:  0.10,  # anti-massive; morphs into broodlords
+                    UnitID.VIPER:      0.20,  # abduct, blinding cloud, caustic spray
                     UnitID.LURKERMP:   0.15,
+                    UnitID.INFESTOR:   0.10,
                 },
                 army_supply_target=170,
                 max_hatcheries=7,
