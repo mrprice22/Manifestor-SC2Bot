@@ -784,14 +784,36 @@ class ZergStructureBuildTactic(BuildingTacticModule):
         if expansion_idea is not None:
             return expansion_idea
 
+        # ── Opening gate ──────────────────────────────────────────────
+        # The Ares build order runner and our tactic system share a
+        # single-frame state snapshot (_abilities_count_and_build_progress
+        # is cached once per frame).  If both fire in the same frame they
+        # both see already_pending == 0 and both dispatch a drone → duplicates.
+        #
+        # Guard: don't touch the _STRUCTURE_PRIORITY list until the Ares
+        # opener is complete OR we're safely past its spawning pool window.
+        # Supply 20 is comfortably past the pool step in all openings
+        # (StandardOpener: 17, TurtleEco: 18, EarlyAggression: 12).
+        # By supply 20 the opener's drone is already walking/morphing, so
+        # bot.already_pending(SPAWNINGPOOL) >= 1 and our cap check blocks
+        # any duplicate from our side.
+        opening_done = (
+            bot.build_order_runner.build_completed
+            or bot.supply_used > 20
+        )
+        if not opening_done:
+            return None
+
         for structure_type, prerequisite, min_minerals in _STRUCTURE_PRIORITY:
             # ── Hard cap on structure count ────────────────────────────
             max_allowed = _max_for_structure(structure_type, bot)
             existing_count = bot.structures(structure_type).amount
-            pending_count = (
-                bot.already_pending(structure_type)
-                + bot.construction_queue.count_active_of_type(structure_type)
-            )
+            # NOTE: Do NOT add bot.already_pending() here — it double-counts
+            # buildings under construction that bot.structures() already
+            # includes.  count_active_of_type covers PENDING + CLAIMED +
+            # BUILDING orders in the construction queue, which is the only
+            # additional source we need.
+            pending_count = bot.construction_queue.count_active_of_type(structure_type)
             total = existing_count + pending_count
 
             if total >= max_allowed:
@@ -945,34 +967,53 @@ class ZergStructureBuildTactic(BuildingTacticModule):
             return None
 
         max_hatch = comp.max_hatcheries
-        # Count all townhalls — ready + in-progress — so we don't double-queue.
-        current_bases = bot.townhalls.amount + bot.already_pending(UnitID.HATCHERY)
+
+        # Count all townhalls — ready + morphing — so we don't double-queue.
+        # bot.townhalls includes under-construction hatcheries.
+        # bot.already_pending(HATCHERY) catches any drone that has a build
+        # order but hasn't started morphing yet (worker en route).
+        hatch_morphing = bot.already_pending(UnitID.HATCHERY)
+        current_bases = bot.townhalls.amount + hatch_morphing
         if current_bases >= max_hatch:
             return None
 
-        # Don't expand if we recently queued one.
+        # Hard gate: don't queue another expansion while ANY hatchery order
+        # is in flight — our queue OR a drone actively en route to build one.
+        # This prevents the MorphTracker DONE→prune gap from causing double queues.
         if bot.construction_queue.count_active_of_type(UnitID.HATCHERY) > 0:
             return None
+        if hatch_morphing > 0:
+            return None
 
-        # Mineral gate — need resources for the hatch (300) plus a buffer.
+        # Mineral gate.
         if bot.minerals < self._EXPAND_MIN_MINERALS:
             return None
 
-        # Saturation trigger: expand when existing bases are ≥70% saturated on
-        # average, OR when we have excess minerals (banking > 500 means we
-        # should be spending on infrastructure).
-        total_ideal = 0
-        total_assigned = 0
-        for th in bot.townhalls.ready:
-            patches = bot.mineral_field.closer_than(10, th.position)
-            total_ideal += len(patches) * 2
-            total_assigned += th.assigned_harvesters
-        avg_saturation = total_assigned / max(total_ideal, 1)
-        banking_hard = bot.minerals > 500
-
-        if avg_saturation < 0.70 and not banking_hard:
+        # Drone count gate: require at least 10 workers per existing base
+        # before taking a new one.  No point expanding into empty hatches.
+        min_drones_to_expand = bot.townhalls.ready.amount * 10
+        if len(bot.workers) < min_drones_to_expand:
             log.debug(
-                "ZergStructureBuildTactic: expansion skipped — saturation %.0f%% < 70%%",
+                "ZergStructureBuildTactic: expansion skipped — workers %d < %d needed",
+                len(bot.workers), min_drones_to_expand,
+                frame=bot.state.game_loop,
+            )
+            return None
+
+        # Saturation trigger: use surplus_harvesters (accounts for gas workers)
+        # so gas workers don't inflate the "assigned" count against a
+        # mineral-only ideal.  Expand when bases are ≥75% saturated on average,
+        # or when minerals are banking hard (≥600).
+        total_surplus = sum(th.surplus_harvesters for th in bot.townhalls.ready)
+        total_ideal   = sum(th.ideal_harvesters   for th in bot.townhalls.ready)
+        # surplus_harvesters = assigned - ideal.  Negative = under-saturated.
+        # avg_saturation: 1.0 = perfect, >1.0 = over, <1.0 = under.
+        avg_saturation = (total_ideal + total_surplus) / max(total_ideal, 1)
+        banking_hard = bot.minerals > 600
+
+        if avg_saturation < 0.75 and not banking_hard:
+            log.debug(
+                "ZergStructureBuildTactic: expansion skipped — saturation %.0f%% < 75%%",
                 avg_saturation * 100,
                 frame=bot.state.game_loop,
             )

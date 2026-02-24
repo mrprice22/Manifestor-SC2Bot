@@ -229,20 +229,16 @@ class ConstructionQueue:
 
     def mark_failed(self, order: ConstructionOrder) -> None:
         """
-        Worker died before completing. Reset to PENDING so it gets re-queued.
+        Worker died or lost its build order before completing.
 
-        Keeps the same priority and base_location so the next available
-        drone can pick it up.
+        Sets status to FAILED so the order is no longer active.
+        Does NOT auto-requeue — the tactic loop (generate_idea) will
+        notice the structure count is below cap and create a fresh order
+        with proper cap checking.  Auto-requeuing here previously bypassed
+        the cap check, causing runaway building (e.g. 10 Evolution Chambers
+        instead of the intended max of 2).
         """
         order.status = OrderStatus.FAILED
-        # Re-insert as a fresh PENDING so it competes again
-        fresh = ConstructionOrder(
-            structure_type=order.structure_type,
-            base_location=order.base_location,
-            priority=order.priority,
-            created_frame=order.created_frame,
-        )
-        self.enqueue(fresh)
 
     # ------------------------------------------------------------------
     # Maintenance — called by MorphTracker.update()
