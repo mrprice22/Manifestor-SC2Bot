@@ -59,16 +59,22 @@ class MineAbility(Ability):
         if unit.orders:
             order = unit.orders[0]
             if order.ability.id in _GATHER_ABILITIES:
-                # Check if the drone's current townhall is mined-out or over-
-                # saturated — if so, we *should* intervene and reassign it.
+                # Check if the drone's nearest townhall is mined-out or over-
+                # saturated — if so, intervene and reassign.
+                #
+                # IMPORTANT: use surplus_harvesters (assigned - ideal) rather
+                # than comparing assigned against a mineral-only ideal count.
+                # assigned_harvesters includes gas workers; ideal_harvesters
+                # includes both mineral and gas slots.  Using the raw patch
+                # count would make gas workers appear as "over-saturation" and
+                # cause every drone to be perpetually redirected to gas.
                 if bot.townhalls.ready:
                     closest_th = bot.townhalls.ready.closest_to(unit.position)
                     nearby_minerals = bot.mineral_field.closer_than(10, closest_th.position)
                     if not nearby_minerals:
                         return True  # base mined out — reassign
-                    ideal = len(nearby_minerals) * 2
-                    if closest_th.assigned_harvesters > ideal:
-                        return True  # over-saturated — reassign
+                    if closest_th.surplus_harvesters > 0:
+                        return True  # genuinely over-saturated — reassign
                 return False  # gather order is fine — let Ares handle it
 
         # Need somewhere to mine
@@ -121,15 +127,12 @@ class MineAbility(Ability):
                 if not nearby_minerals:
                     continue  # mined-out base — skip entirely
 
-                ideal = len(nearby_minerals) * 2
-                assigned = th.assigned_harvesters
-                if assigned >= ideal:
-                    continue  # already saturated
+                # surplus_harvesters = assigned - ideal (accounts for gas too).
+                # Negative means under-saturated — this base wants more workers.
+                if th.surplus_harvesters >= 0:
+                    continue  # at or above ideal — skip
 
-                # Lower score = better candidate.
-                # Prefer bases that need workers (headroom) weighted against
-                # distance so drones don't walk across the map unnecessarily.
-                headroom = ideal - assigned
+                headroom = abs(th.surplus_harvesters)
                 distance = unit.position.distance_to(th.position)
                 score = distance / max(headroom, 1)
 

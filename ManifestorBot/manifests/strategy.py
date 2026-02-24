@@ -363,10 +363,10 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
     # hive tech late. No mutas — solid predictable execution.
     # ─────────────────────────────────────────────────────────────────────────────
     Strategy.STOCK_STANDARD: TacticalProfile(
-        engage_bias   = 0.2,
+        engage_bias   = 0.1,
         retreat_bias  = 0.1,
-        harass_bias   = 0.2,
-        cohesion_bias = 0.0,
+        harass_bias   = 0.1,
+        cohesion_bias = 0.1,
         hold_bias     = 0.0,
         sacrifice_ok  = False,
         composition_curve = [
@@ -374,6 +374,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
                 ratios={
                     UnitID.QUEEN:    0.40,
                     UnitID.ZERGLING: 0.60,
+                    UnitID.BANELING: 0.20,
                 },
                 army_supply_target=20,
                 max_hatcheries=2,
@@ -383,6 +384,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
                     UnitID.QUEEN:    0.15,
                     UnitID.ZERGLING: 0.30,
                     UnitID.ROACH:    0.55,
+                    UnitID.BANELING: 0.20,
                 },
                 army_supply_target=60,
                 max_hatcheries=4,

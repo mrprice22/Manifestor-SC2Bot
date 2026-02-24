@@ -74,6 +74,25 @@ _STRUCTURE_PRIORITY = [
     (UnitID.ULTRALISKCAVERN,       UnitID.HIVE,                 150),
 ]
 
+# Maximum number of each structure type we'll ever build. Any type not
+# listed here defaults to 1. Hatcheries are handled by _maybe_expand()
+# and are NOT in this map. Spore/Spine Crawlers are treated as units
+# and bypass this system entirely.
+# Extractors are also absent — their cap is dynamic (2 per base), see
+# _max_for_structure().
+_MAX_STRUCTURE_COUNT: dict[UnitID, int] = {
+    UnitID.EVOLUTIONCHAMBER:  2,  # dual upgrade lanes (melee + ranged / armor)
+    UnitID.NYDUSNETWORK:      3,
+}
+_DEFAULT_MAX_STRUCTURES: int = 1
+
+
+def _max_for_structure(structure_type: UnitID, bot) -> int:
+    """Return the max allowed count for a structure, with dynamic caps."""
+    if structure_type == UnitID.EXTRACTOR:
+        return len(bot.townhalls.ready) * 2
+    return _MAX_STRUCTURE_COUNT.get(structure_type, _DEFAULT_MAX_STRUCTURES)
+
 # ---------------------------------------------------------------------------
 # 1. Worker Production
 # ---------------------------------------------------------------------------
@@ -766,14 +785,19 @@ class ZergStructureBuildTactic(BuildingTacticModule):
             return expansion_idea
 
         for structure_type, prerequisite, min_minerals in _STRUCTURE_PRIORITY:
-            already_exists = bot.structures(structure_type).amount > 0
-            already_pending_ares = bot.already_pending(structure_type) > 0
-            already_in_queue = bot.construction_queue.count_active_of_type(structure_type) > 0
+            # ── Hard cap on structure count ────────────────────────────
+            max_allowed = _max_for_structure(structure_type, bot)
+            existing_count = bot.structures(structure_type).amount
+            pending_count = (
+                bot.already_pending(structure_type)
+                + bot.construction_queue.count_active_of_type(structure_type)
+            )
+            total = existing_count + pending_count
 
-            if already_exists or already_pending_ares or already_in_queue:
+            if total >= max_allowed:
                 log.debug(
-                    "ZergStructureBuildTactic: %s already exists/pending/queued — skipping",
-                    structure_type.name,
+                    "ZergStructureBuildTactic: %s at cap (%d/%d) — skipping",
+                    structure_type.name, total, max_allowed,
                     frame=bot.state.game_loop,
                 )
                 continue

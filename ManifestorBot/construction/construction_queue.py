@@ -197,10 +197,11 @@ class ConstructionQueue:
         return any(o.status == OrderStatus.PENDING for o in self._orders)
 
     def count_active_of_type(self, structure_type: UnitID) -> int:
-        """How many orders for this type are CLAIMED or BUILDING."""
+        """How many orders for this type are PENDING, CLAIMED, or BUILDING."""
         return sum(
             1 for o in self._orders
-            if o.structure_type == structure_type and o.is_active
+            if o.structure_type == structure_type
+            and o.status in (OrderStatus.PENDING, OrderStatus.CLAIMED, OrderStatus.BUILDING)
         )
 
     # ------------------------------------------------------------------
