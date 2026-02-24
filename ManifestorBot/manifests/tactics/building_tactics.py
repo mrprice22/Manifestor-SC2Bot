@@ -222,23 +222,72 @@ class ZergWorkerProductionTactic(BuildingTacticModule):
 # ---------------------------------------------------------------------------
 
 # Priority-ordered list of Zerg army units and the structures that make them.
-# The first affordable type from this list is queued.
-# NOTE: BANELING is morphed from ZERGLING at the BANELINGNEST, not trained directly.
-# However, in python-sc2 / Ares, BANELING training is issued to the Hatchery larva
-# and requires a BanelingNest — it IS in the tech_requirement_progress check.
+# Used for two purposes:
+#   1. Fallback when composition targeting returns nothing (ordered: cheapest first).
+#   2. `can_train` guard in _pick_by_composition / counter-play override.
+#
+# IMPORTANT: In SC2 all larva-produced units can be trained from ANY hatchery-class
+# structure (HATCHERY, LAIR, or HIVE) — the producing structure is just the anchor
+# used to find nearby larva.  Tech gates are enforced by tech_requirement_progress,
+# NOT by which building type we list here.  Every unit must therefore appear against
+# all three structure types or it will be silently skipped when evaluated against a
+# plain HATCHERY (the common case once expansions are up).
+#
+# Morph units (BANELING, RAVAGER, LURKERMP, BROODLORD) are NOT listed here because
+# they are morphed from existing units, not trained from larva.  They belong in a
+# dedicated morph tactic.  Listing them in _ARMY_PRIORITY would cause the system to
+# try to train them from larva and always fail.
 _ARMY_PRIORITY: List[tuple[UnitID, UnitID]] = [
-    # (unit_to_train,  producing_structure_type)
+    # (unit_to_train,    producing_structure_type)
+
+    # Tier 1 — Spawning Pool (50 min / 0 gas)
     (UnitID.ZERGLING,    UnitID.HATCHERY),
     (UnitID.ZERGLING,    UnitID.LAIR),
     (UnitID.ZERGLING,    UnitID.HIVE),
+
+    # Tier 1 — Roach Warren (75 min / 25 gas)
     (UnitID.ROACH,       UnitID.HATCHERY),
     (UnitID.ROACH,       UnitID.LAIR),
     (UnitID.ROACH,       UnitID.HIVE),
+
+    # Tier 2 — Hydralisk Den + Lair (100 min / 50 gas)
+    (UnitID.HYDRALISK,   UnitID.HATCHERY),
     (UnitID.HYDRALISK,   UnitID.LAIR),
     (UnitID.HYDRALISK,   UnitID.HIVE),
+
+    # Tier 2 — Infestation Pit + Lair (100 min / 50 gas / 150 min / 100 gas)
+    (UnitID.INFESTOR,    UnitID.HATCHERY),
+    (UnitID.INFESTOR,    UnitID.LAIR),
+    (UnitID.INFESTOR,    UnitID.HIVE),
+    (UnitID.SWARMHOSTMP, UnitID.HATCHERY),
+    (UnitID.SWARMHOSTMP, UnitID.LAIR),
+    (UnitID.SWARMHOSTMP, UnitID.HIVE),
+
+    # Tier 2 — Spire + Lair (100 min / 100 gas / 150 min / 100 gas)
+    (UnitID.MUTALISK,    UnitID.HATCHERY),
     (UnitID.MUTALISK,    UnitID.LAIR),
+    (UnitID.MUTALISK,    UnitID.HIVE),
+    (UnitID.CORRUPTOR,   UnitID.HATCHERY),
+    (UnitID.CORRUPTOR,   UnitID.LAIR),
+    (UnitID.CORRUPTOR,   UnitID.HIVE),
+
+    # Tier 3 — Hive (100 min / 200 gas)
+    (UnitID.VIPER,       UnitID.HATCHERY),
+    (UnitID.VIPER,       UnitID.LAIR),
+    (UnitID.VIPER,       UnitID.HIVE),
+
+    # Tier 3 — Ultralisk Cavern + Hive (300 min / 200 gas)
+    (UnitID.ULTRALISK,   UnitID.HATCHERY),
+    (UnitID.ULTRALISK,   UnitID.LAIR),
     (UnitID.ULTRALISK,   UnitID.HIVE),
 ]
+
+# When composition wants a gas-requiring unit but we're temporarily gas-starved,
+# don't immediately fall back to zergling spam — hold the larva so resources
+# accumulate for the correct unit.  Only override this patience and build cheap
+# filler if minerals have built up above this threshold (i.e. we'd be wasting income
+# by refusing to spend minerals at all).
+_COMPOSITION_MINERAL_FLOAT_THRESHOLD: int = 350
 
 # Minimum army supply we always want, regardless of strategy.
 # Below this threshold we ALWAYS push army production (confidence 0.85).
@@ -455,6 +504,35 @@ class ZergArmyProductionTactic(BuildingTacticModule):
                 )
                 return best_type
 
+            # Composition returned nothing — all wanted units either lack tech or
+            # can't be afforded right now.  Before falling back to the priority list
+            # (which always finds zergling), check whether a composition unit has its
+            # tech ready but is just waiting on mineral/gas accumulation.  If so,
+            # hold the larva rather than cementing the zergling-dominant army further.
+            # Exception: if minerals are already piling up past the float threshold,
+            # build cheap filler rather than wasting income completely.
+            blocked = self._wanted_unit_blocked_by_resources(building, bot, target)
+            if blocked is not None:
+                if bot.minerals < _COMPOSITION_MINERAL_FLOAT_THRESHOLD:
+                    log.debug(
+                        "ZergArmyProductionTactic: holding larva for %s "
+                        "(tech ready, resource-constrained; min=%d gas=%d threshold=%d)",
+                        blocked.name,
+                        bot.minerals,
+                        bot.vespene,
+                        _COMPOSITION_MINERAL_FLOAT_THRESHOLD,
+                        frame=bot.state.game_loop,
+                    )
+                    return None
+                log.debug(
+                    "ZergArmyProductionTactic: mineral float (min=%d >= %d) — "
+                    "allowing cheap filler despite wanting %s",
+                    bot.minerals,
+                    _COMPOSITION_MINERAL_FLOAT_THRESHOLD,
+                    blocked.name,
+                    frame=bot.state.game_loop,
+                )
+
         # Fallback: priority list
         for unit_type, structure_type in _ARMY_PRIORITY:
             if building.type_id != structure_type:
@@ -504,14 +582,19 @@ class ZergArmyProductionTactic(BuildingTacticModule):
         if building.type_id not in valid_structure_types:
             return None
 
-        # Find the most under-represented affordable type
+        # Find the most under-represented affordable type.
+        # Sentinel starts at 0.0 — only units with a POSITIVE deficit (i.e. genuinely
+        # underrepresented) can win.  A negative deficit means we already have too many
+        # of that type and should never pick it here, even as a last resort.
         best_type = None
-        best_deficit = -999.0
+        best_deficit = 0.0
 
         for unit_type, ratio in target.ratios.items():
             if unit_type in WORKER_AND_SUPPORT:
                 continue
-            # Check this unit can be trained from a hatchery-class structure
+            # Check this unit can be trained from a hatchery-class structure.
+            # After the _ARMY_PRIORITY fix every larva-produceable unit lists
+            # HATCHERY so this correctly rejects morph-only units (LURKERMP, etc.).
             can_train = any(
                 structure == building.type_id
                 for u, structure in _ARMY_PRIORITY
@@ -531,6 +614,68 @@ class ZergArmyProductionTactic(BuildingTacticModule):
                 best_type = unit_type
 
         return best_type
+
+    def _wanted_unit_blocked_by_resources(
+        self,
+        building: "Unit",
+        bot: "ManifestorBot",
+        target,
+    ) -> Optional[UnitID]:
+        """
+        Return the highest-deficit composition unit that:
+          - can be trained from this building type (is in _ARMY_PRIORITY)
+          - has tech fully unlocked (tech_requirement_progress >= 1.0)
+          - cannot currently be afforded (minerals or gas short)
+
+        Returns None if no such unit exists (either tech isn't ready yet, or
+        everything is affordable — meaning _pick_by_composition should have caught it).
+
+        Used by _pick_unit to decide whether to hold larva instead of defaulting
+        to cheap zergling spam while waiting for gas/minerals to accumulate.
+        """
+        WORKER_AND_SUPPORT = {
+            UnitID.DRONE, UnitID.QUEEN, UnitID.OVERLORD,
+            UnitID.OVERSEER, UnitID.OVERLORDCOCOON,
+        }
+        total_combat_supply = sum(
+            SUPPLY_COST.get(u.type_id, 2)
+            for u in bot.units.exclude_type(WORKER_AND_SUPPORT)
+        ) or 1
+        supply_by_type: dict[UnitID, int] = {}
+        for unit in bot.units.exclude_type(WORKER_AND_SUPPORT):
+            cost = SUPPLY_COST.get(unit.type_id, 2)
+            supply_by_type[unit.type_id] = supply_by_type.get(unit.type_id, 0) + cost
+
+        best_blocked: Optional[UnitID] = None
+        best_deficit: float = 0.0
+
+        for unit_type, ratio in target.ratios.items():
+            if unit_type in WORKER_AND_SUPPORT:
+                continue
+            # Must be trainable from this building type
+            can_train = any(
+                structure == building.type_id
+                for u, structure in _ARMY_PRIORITY
+                if u == unit_type
+            )
+            if not can_train:
+                continue
+            # Tech must be unlocked — if tech isn't ready yet this isn't a
+            # resource problem, it's a structure problem (handled elsewhere).
+            if bot.tech_requirement_progress(unit_type) < 1.0:
+                continue
+            # Must NOT be affordable — if it were, _pick_by_composition would have
+            # selected it already.
+            if bot.can_afford(unit_type):
+                continue
+
+            current_fraction = supply_by_type.get(unit_type, 0) / total_combat_supply
+            deficit = ratio - current_fraction
+            if deficit > best_deficit:
+                best_deficit = deficit
+                best_blocked = unit_type
+
+        return best_blocked
 
     def execute(self, building: "Unit", idea: BuildingIdea, bot: "ManifestorBot") -> bool:
         result = self._execute_train(building, idea, bot)
