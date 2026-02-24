@@ -54,6 +54,7 @@ from ManifestorBot.abilities.worker_abilities import (
     MiningTactic,
 )
 from ManifestorBot.manifests.scout_ledger import ScoutLedger
+from ManifestorBot.manifests.zergling_scout import ZerglingScouter
 from ManifestorBot.construction import (
     ConstructionQueue,
     ConstructionOrder,
@@ -102,6 +103,9 @@ class ManifestorBot(AresBot):
         # Scout ledger for counter-play intelligence
         self.scout_ledger = ScoutLedger(self)
 
+        # Zergling scouting manager (pheromone coverage + timed suicide scouts)
+        self.zergling_scouter: ZerglingScouter = ZerglingScouter(self)
+
         # Overlord early-warning system
         self.territory_border_map: Optional[TerritoryBorderMap] = None
 
@@ -142,6 +146,10 @@ class ManifestorBot(AresBot):
         # Initialize pheromone map
         self.pheromone_map = PheromoneMap(self, PheromoneConfig())
 
+        # Resolve enemy locations for the zergling scouter
+        self.zergling_scouter.initialise_targets()
+        log.info("ZerglingScouter targets initialised")
+
         # Initialise territory border map for overlord placement
         self.territory_border_map = TerritoryBorderMap(self, BorderConfig())
         log.info("TerritoryBorderMap initialised (%dx%d map)",
@@ -180,6 +188,12 @@ class ManifestorBot(AresBot):
         self.morph_tracker.update(self)
         self.scout_ledger.update(iteration)
         self.pheromone_map.update(iteration)
+        self.zergling_scouter.update(iteration)
+
+        # Log a brief scouter summary every ~30 seconds (672 frames)
+        if iteration % 672 == 0:
+            log.info(self.zergling_scouter.summary())
+        
         if self.territory_border_map is not None:
             self.territory_border_map.update(iteration)
         
@@ -249,6 +263,14 @@ class ManifestorBot(AresBot):
             for unit in units:
                 unit_role = self._get_unit_role(unit.tag)
                 if unit_role in {UnitRole.BUILDING, UnitRole.GATHERING}:
+                    continue
+                # Skip units currently managed by the zergling scouter so
+                # the normal tactic loop doesn't countermand their orders.
+                if self.zergling_scouter.is_scouting_tag(unit.tag):
+                    log.debug(
+                        "_generate_unit_ideas: skipping scouting zergling tag=%d",
+                        unit.tag,
+                    )
                     continue
                 all_candidate_units.append(unit)
 
