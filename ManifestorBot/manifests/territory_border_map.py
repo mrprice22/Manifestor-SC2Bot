@@ -76,6 +76,10 @@ class BorderConfig:
     # Slots below this are still used but sorted to the back.
     threat_scent_threshold: float = 0.5
 
+    # How many overlords can be assigned to vision-edge scouting
+    # (the rest go to creep-edge sentinel positions).
+    max_scout_slots: int = 2
+
 
 # ---------------------------------------------------------------------------
 # Main class
@@ -100,11 +104,17 @@ class TerritoryBorderMap:
         self._map_w: int = bot.game_info.pathing_grid.width
         self._map_h: int = bot.game_info.pathing_grid.height
 
-        # Cached watch-ring slots (Point2 list, game-space)
+        # Cached creep-edge watch-ring slots (Point2 list, game-space)
         self._watch_slots: list[Point2] = []
+
+        # Vision-edge scout slots (capped at max_scout_slots)
+        self._scout_slots: list[Point2] = []
 
         # Persistent overlord → slot assignments {unit_tag: Point2}
         self._assignments: dict[int, Point2] = {}
+
+        # Scout overlord → slot assignments
+        self._scout_assignments: dict[int, Point2] = {}
 
         # Frame of last full recompute
         self._last_recompute: int = -9999
@@ -152,6 +162,36 @@ class TerritoryBorderMap:
     def release(self, overlord_tag: int) -> None:
         """Remove the assignment for this overlord (called when it dies)."""
         self._assignments.pop(overlord_tag, None)
+        self._scout_assignments.pop(overlord_tag, None)
+
+    # --- Scout slot API ---
+
+    def get_uncovered_scout_slots(self) -> list[Point2]:
+        """Return scout slots that have no overlord currently assigned."""
+        covered_positions = {
+            slot for slot in self._scout_slots
+            if self._slot_is_covered_in(slot, self._scout_assignments)
+        }
+        uncovered = [s for s in self._scout_slots if s not in covered_positions]
+        return self._prioritise_slots(uncovered)
+
+    def assign_scout(self, overlord_tag: int, slot: Point2) -> None:
+        """Record that this overlord has been sent to a scout slot."""
+        self._scout_assignments[overlord_tag] = slot
+
+    def release_scout(self, overlord_tag: int) -> None:
+        """Remove the scout assignment for this overlord."""
+        self._scout_assignments.pop(overlord_tag, None)
+
+    @property
+    def scout_slots(self) -> list[Point2]:
+        """All current vision-edge scout positions."""
+        return list(self._scout_slots)
+
+    @property
+    def scout_assignment_count(self) -> int:
+        """How many overlords currently have a scout assignment."""
+        return len(self._scout_assignments)
 
     def is_covered(self, slot: Point2) -> bool:
         """Return True if an overlord is on-station at this slot."""
@@ -173,29 +213,53 @@ class TerritoryBorderMap:
 
     def _recompute_watch_ring(self) -> None:
         """
-        Full recompute:
-        1. Build a boolean coverage mask from the current visibility map.
-        2. Find cells just outside the coverage edge (dilation - erosion).
-        3. Filter to walkable/flyable cells within watch_ring_inner/outer.
-        4. Thin to max_slots well-spaced points.
+        Full recompute — produces two slot pools:
+        1. _watch_slots (creep-edge sentinels): ring around creep boundary.
+        2. _scout_slots (vision-edge scouts): ring at vision/unexplored
+           boundary, capped at max_scout_slots.
+
+        Fallback: if creep-edge yields nothing (game start), all slots
+        come from the unexplored-edge fallback.
         """
         try:
-            coverage = self._build_coverage_mask()
-            if coverage is None:
-                return
+            # --- Creep-edge sentinel slots ---
+            creep_mask = self._build_creep_only_mask()
+            creep_slots: list[Point2] = []
+            if creep_mask is not None and creep_mask.any():
+                ring_cells = self._find_ring_cells(creep_mask)
+                creep_slots = self._cells_to_points(ring_cells)
+                creep_slots = self._thin_slots(creep_slots)
 
-            ring_cells = self._find_ring_cells(coverage)
-            slots = self._cells_to_points(ring_cells)
-            slots = self._thin_slots(slots)
+            # Fallback when no creep ring (early game)
+            if not creep_slots:
+                creep_slots = self._fallback_unexplored_edge_slots()
 
-            # --- Fallback: if no creep-edge slots found, use unexplored map boundary ---
-            if not slots:
-                slots = self._fallback_unexplored_edge_slots()
-            self._watch_slots = slots
-            log.info("Watch ring recomputed: %d slots (fallback=%s)", len(self._watch_slots), not ring_cells)
+            self._watch_slots = creep_slots
+
+            # --- Vision-edge scout slots ---
+            vision_mask = self._build_coverage_mask()
+            scout_slots: list[Point2] = []
+            if vision_mask is not None:
+                ring_cells = self._find_ring_cells(vision_mask)
+                scout_pts = self._cells_to_points(ring_cells)
+                scout_pts = self._thin_slots(scout_pts)
+                # Remove any that overlap with creep-edge slots
+                tol = self.cfg.slot_tolerance
+                scout_slots = [
+                    s for s in scout_pts
+                    if all(s.distance_to(ws) > tol for ws in self._watch_slots)
+                ]
+
+            # Cap to max_scout_slots
+            self._scout_slots = scout_slots[: self.cfg.max_scout_slots]
+
+            log.info(
+                "Watch ring recomputed: %d creep-edge slots, %d scout slots",
+                len(self._watch_slots), len(self._scout_slots),
+            )
 
         except Exception as e:
-            log.error("_fallback_unexplored_edge_slots: failed to read visibility: %s", e)
+            log.error("_recompute_watch_ring: failed: %s", e)
             
 
     def _fallback_unexplored_edge_slots(self) -> list[Point2]:
@@ -253,6 +317,27 @@ class TerritoryBorderMap:
             candidates.append(Point2((w - margin, y)))
             y += spacing
         return self._thin_slots(candidates)
+
+    def _build_creep_only_mask(self) -> Optional[np.ndarray]:
+        """
+        Build a boolean 2D array (map_h x map_w) where True = creep tile.
+        Does NOT include vision — produces a ring that hugs the creep boundary.
+        """
+        h, w = self._map_h, self._map_w
+        try:
+            creep = self.bot.state.creep
+            try:
+                creep_raw = np.frombuffer(creep.data, dtype=np.uint8).reshape(h, w)
+                return creep_raw.astype(bool)
+            except Exception:
+                mask = np.zeros((h, w), dtype=bool)
+                for y in range(h):
+                    for x in range(w):
+                        if creep[x, y]:
+                            mask[y, x] = True
+                return mask
+        except AttributeError:
+            return None
 
     def _build_coverage_mask(self) -> Optional[np.ndarray]:
         """
@@ -340,25 +425,35 @@ class TerritoryBorderMap:
 
         Uses a simple greedy farthest-point selection to ensure coverage
         is spread around the perimeter rather than clustered.
+        Filters out behind-the-base slots and prioritises forward-facing ones.
         """
         if not slots:
             return []
 
         spacing = self.cfg.slot_spacing
-        selected: list[Point2] = []
-
-        # Sort by distance from start location first as a tie-breaker
-        # (closer to our base = higher priority to check)
         start = self.bot.start_location
-        slots_sorted = sorted(slots, key=lambda p: p.distance_to(start))
+        enemy_start = self.bot.enemy_start_locations[0] if self.bot.enemy_start_locations else start
+        base_to_enemy_dist = start.distance_to(enemy_start)
 
+        # Filter out slots behind our base (further from enemy than we are + margin)
+        margin = 10.0
+        forward_slots = [
+            p for p in slots
+            if p.distance_to(enemy_start) <= base_to_enemy_dist + margin
+        ]
+        # Fall back to all slots if filtering removes everything
+        if not forward_slots:
+            forward_slots = slots
+
+        # Sort by distance to enemy (closest = most forward = highest priority)
+        slots_sorted = sorted(forward_slots, key=lambda p: p.distance_to(enemy_start))
+
+        selected: list[Point2] = []
         for candidate in slots_sorted:
             if len(selected) >= self.cfg.max_slots:
                 break
-            # Accept if far enough from all already-selected slots
             if all(candidate.distance_to(s) >= spacing for s in selected):
                 selected.append(candidate)
-
         return selected
 
     # ------------------------------------------------------------------ #
@@ -369,26 +464,60 @@ class TerritoryBorderMap:
         """
         Remove assignments where:
         - The overlord no longer exists (died or morphed)
-        - The slot it was assigned is no longer on the watch ring
+        - The slot it was assigned is no longer near any watch ring slot
+
+        Handles both watch (creep-edge) and scout (vision-edge) pools.
         """
         live_tags = {u.tag for u in self.bot.units(
             {UnitID.OVERLORD, UnitID.OVERLORDTRANSPORT, UnitID.OVERSEER}
         )}
-        valid_slots = set(self._watch_slots)
+        self._validate_pool(self._assignments, self._watch_slots, live_tags)
+        self._validate_pool(self._scout_assignments, self._scout_slots, live_tags)
 
-        stale = [
-            tag for tag, slot in self._assignments.items()
-            if tag not in live_tags or slot not in valid_slots
-        ]
+    def _validate_pool(
+        self,
+        assignments: dict[int, Point2],
+        slot_list: list[Point2],
+        live_tags: set[int],
+    ) -> None:
+        """Validate one assignment pool against its slot list."""
+        tol = self.cfg.slot_tolerance
+        stale = []
+        for tag, old_slot in assignments.items():
+            if tag not in live_tags:
+                stale.append(tag)
+                continue
+            nearest_new = None
+            nearest_dist = float('inf')
+            for new_slot in slot_list:
+                d = old_slot.distance_to(new_slot)
+                if d < nearest_dist:
+                    nearest_dist = d
+                    nearest_new = new_slot
+            if nearest_new is not None and nearest_dist <= tol:
+                assignments[tag] = nearest_new
+            else:
+                stale.append(tag)
         for tag in stale:
-            self._assignments.pop(tag, None)
+            assignments.pop(tag, None)
 
     def _slot_is_covered(self, slot: Point2) -> bool:
+        """Check coverage across both watch and scout assignment pools."""
+        return (
+            self._slot_is_covered_in(slot, self._assignments) or
+            self._slot_is_covered_in(slot, self._scout_assignments)
+        )
+
+    def _slot_is_covered_in(self, slot: Point2, assignments: dict[int, Point2]) -> bool:
         """
-        Return True if there is an overlord on-station at this slot
-        (within slot_tolerance distance).
+        Return True if there is an overlord assigned to this slot
+        (within slot_tolerance distance) in the given assignment dict,
+        or physically on-station.
         """
         tol = self.cfg.slot_tolerance
+        for tag, assigned_slot in assignments.items():
+            if assigned_slot.distance_to(slot) <= tol:
+                return True
         overlords = self.bot.units({UnitID.OVERLORD, UnitID.OVERLORDTRANSPORT, UnitID.OVERSEER})
         return any(ol.distance_to(slot) <= tol for ol in overlords)
 
@@ -422,10 +551,13 @@ class TerritoryBorderMap:
     # ------------------------------------------------------------------ #
 
     def summary(self) -> str:
-        covered = sum(1 for s in self._watch_slots if self._slot_is_covered(s))
+        watch_covered = sum(1 for s in self._watch_slots if self._slot_is_covered(s))
+        scout_covered = sum(1 for s in self._scout_slots if self._slot_is_covered(s))
         return (
-            f"TerritoryBorderMap: {len(self._watch_slots)} slots | "
-            f"{covered} covered | {len(self._assignments)} assigned"
+            f"TerritoryBorderMap: {len(self._watch_slots)} creep-edge ({watch_covered} covered, "
+            f"{len(self._assignments)} assigned) | "
+            f"{len(self._scout_slots)} scout ({scout_covered} covered, "
+            f"{len(self._scout_assignments)} assigned)"
         )
 
 

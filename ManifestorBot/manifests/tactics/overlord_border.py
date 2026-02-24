@@ -80,6 +80,9 @@ class OverlordBorderTactic(TacticModule):
     # Base confidence — always high so this fires unless something more urgent wins
     BASE_CONFIDENCE: float = 0.70
 
+    # Scout confidence is slightly lower so creep-edge fills first
+    SCOUT_CONFIDENCE: float = 0.65
+
     # Only fire for OVERLORD (not OVERSEER — different role)
     _OVERLORD_TYPES = {UnitID.OVERLORD, UnitID.OVERLORDTRANSPORT}
 
@@ -103,7 +106,10 @@ class OverlordBorderTactic(TacticModule):
             return False
 
         # If already assigned to a slot and on-station, nothing to do
-        assigned_slot = border_map._assignments.get(unit.tag)
+        assigned_slot = (
+            border_map._assignments.get(unit.tag)
+            or border_map._scout_assignments.get(unit.tag)
+        )
         if assigned_slot is not None:
             if unit.distance_to(assigned_slot) <= self.ON_STATION_DISTANCE:
                 return False  # Already there — no idea needed this cycle
@@ -120,23 +126,28 @@ class OverlordBorderTactic(TacticModule):
         border_map = bot.territory_border_map
         confidence = self.BASE_CONFIDENCE
         evidence: dict = {}
+        is_scout = False
 
         # --- sub-signal: danger near this overlord ---
         nearby_enemies = bot.enemy_units.closer_than(self.DANGER_RADIUS, unit.position)
         if nearby_enemies:
-            # Let KeepUnitSafe handle it — lower our confidence so it wins
             sig = min(0.30, len(nearby_enemies) * 0.10)
             confidence -= sig
             evidence['overlord_in_danger'] = round(-sig, 3)
 
         if confidence < 0.40:
-            # Too dangerous to reposition right now
             return None
 
-        # --- find the best available slot for this overlord ---
-        slot = self._pick_slot(unit, bot, border_map, heuristics)
+        # --- decide pool: scout vs creep-edge sentinel ---
+        slot, is_scout = self._pick_slot(unit, bot, border_map, heuristics)
         if slot is None:
             return None
+
+        if is_scout:
+            confidence = self.SCOUT_CONFIDENCE
+            evidence['role'] = 'scout'
+        else:
+            evidence['role'] = 'sentinel'
 
         # --- sub-signal: slot is on a hot threat corridor ---
         pm = getattr(bot, 'pheromone_map', None)
@@ -156,10 +167,13 @@ class OverlordBorderTactic(TacticModule):
             confidence += sig
             evidence['thin_coverage'] = round(sig, 3)
 
-        evidence['base'] = self.BASE_CONFIDENCE
+        evidence['base'] = self.SCOUT_CONFIDENCE if is_scout else self.BASE_CONFIDENCE
 
         # Register the assignment so other overlords don't race for the same slot
-        border_map.assign(unit.tag, slot)
+        if is_scout:
+            border_map.assign_scout(unit.tag, slot)
+        else:
+            border_map.assign(unit.tag, slot)
 
         return TacticIdea(
             tactic_module=self,
@@ -181,9 +195,10 @@ class OverlordBorderTactic(TacticModule):
         # Sanity check: if slot is no longer valid (watch ring changed),
         # release the assignment and return None gracefully
         border_map = getattr(bot, 'territory_border_map', None)
-        if border_map is not None and slot not in border_map.watch_slots:
-            border_map.release(unit.tag)
-            return None
+        if border_map is not None:
+            if slot not in border_map.watch_slots and slot not in border_map.scout_slots:
+                border_map.release(unit.tag)
+                return None
 
         # Use air grid since overlords fly
         try:
@@ -210,32 +225,50 @@ class OverlordBorderTactic(TacticModule):
         bot: 'ManifestorBot',
         border_map,
         heuristics: 'HeuristicState',
-    ) -> Optional[Point2]:
+    ) -> tuple[Optional[Point2], bool]:
         """
         Choose the best uncovered slot for this overlord.
 
-        If the overlord already has an assignment and that slot still
-        exists, keep it (stability > thrashing). Otherwise pick the
-        nearest uncovered slot from the prioritised list.
+        Returns (slot, is_scout). Creep-edge sentinel slots are preferred;
+        scout slots are only used when sentinel slots are full and the
+        scout cap hasn't been reached.
         """
-        # Honour existing assignment if it's still valid
+        # Honour existing sentinel assignment if still valid
         current = border_map._assignments.get(unit.tag)
         if current is not None and current in border_map.watch_slots:
-            return current
+            return current, False
 
-        # Pick from the threat-prioritised uncovered list
-        uncovered = border_map.get_uncovered_slots()
+        # Honour existing scout assignment if still valid
+        current_scout = border_map._scout_assignments.get(unit.tag)
+        if current_scout is not None and current_scout in border_map.scout_slots:
+            return current_scout, True
+
+        # --- Try creep-edge sentinel slots first ---
+        slot = self._pick_from_pool(unit, bot, border_map.get_uncovered_slots())
+        if slot is not None:
+            return slot, False
+
+        # --- Fall back to scout slots if under the cap ---
+        if border_map.scout_assignment_count < border_map.cfg.max_scout_slots:
+            slot = self._pick_from_pool(unit, bot, border_map.get_uncovered_scout_slots())
+            if slot is not None:
+                return slot, True
+
+        return None, False
+
+    def _pick_from_pool(
+        self,
+        unit: Unit,
+        bot: 'ManifestorBot',
+        uncovered: list[Point2],
+    ) -> Optional[Point2]:
+        """Pick the nearest safe uncovered slot from a pool."""
         if not uncovered:
             return None
-
-        # Skip slots that have an enemy too close (would just die there)
         safe_slots = [
             s for s in uncovered
             if not bot.enemy_units.closer_than(self.DANGER_RADIUS, s)
         ]
-
         if not safe_slots:
             return None
-
-        # Among safe slots, pick the closest to this overlord to minimise travel
         return min(safe_slots, key=lambda s: unit.distance_to(s))

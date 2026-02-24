@@ -5,7 +5,8 @@
       "Bash(cd /c/Git/Manifestor-SC2Bot && python -c \"from ManifestorBot.manifests.tactics.building_tactics import ZergTechMorphTactic; print\\('Import OK'\\)\" 2>&1)",
       "Bash(cd /c/Git/Manifestor-SC2Bot && venv/Scripts/python.exe -c \"from ManifestorBot.manifests.tactics.building_tactics import ZergTechMorphTactic; print\\('Import OK'\\)\" 2>&1)",
       "Bash(cd /c/Git/Manifestor-SC2Bot && venv/Scripts/python.exe -c \"import py_compile; py_compile.compile\\('ManifestorBot/manifests/tactics/building_tactics.py', doraise=True\\); print\\('Syntax OK'\\)\" 2>&1)",
-      "Bash(cd /c/Git/Manifestor-SC2Bot && venv/Scripts/python.exe -c \"import py_compile; py_compile.compile\\('ManifestorBot/manifestor_bot.py', doraise=True\\); print\\('Syntax OK'\\)\" 2>&1)"
+      "Bash(cd /c/Git/Manifestor-SC2Bot && venv/Scripts/python.exe -c \"import py_compile; py_compile.compile\\('ManifestorBot/manifestor_bot.py', doraise=True\\); print\\('Syntax OK'\\)\" 2>&1)",
+      "Bash(grep:*)"
     ]
   }
 }
