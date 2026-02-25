@@ -156,6 +156,10 @@ class ManifestorBot(AresBot):
         # the bot.available_minerals property.
         self.emergency_mineral_reserve: int = 25
 
+        # End-of-game stats accumulator
+        from ManifestorBot.game_stats import GameStatsTracker
+        self.game_stats: GameStatsTracker = GameStatsTracker()
+
         # Pheromone map
         self.pheromone_map: Optional[PheromoneMap] = None
 
@@ -249,6 +253,9 @@ class ManifestorBot(AresBot):
             uncovered = self.territory_border_map.get_uncovered_slots()
             if uncovered:
                 log.info("Uncovered border slots: %d", len(uncovered))
+
+        # STAGE 0: Accumulate end-game stats (self-throttled, negligible overhead)
+        self.game_stats.update(self)
 
         # STAGE 1: Calculate all heuristics
         self.heuristic_manager.update(iteration)
@@ -603,24 +610,32 @@ class ManifestorBot(AresBot):
         await self.chat_send(message, team_only=False)
 
     async def on_end(self, game_result: Result) -> None:
-        """Clean shutdown"""
+        """Clean shutdown — finalize stats, then log result."""
         if hasattr(self, 'state'):
             await super().on_end(game_result)
 
         if self.territory_border_map is not None:
             log.info("Final border map state: %s", self.territory_border_map.summary())
 
+        end_frame = getattr(getattr(self, "state", None), "game_loop", 0) or 0
+
         log.game_event(
             "GAME_END",
             f"result={game_result} | final_strategy={self.current_strategy.value}",
-            frame=getattr(getattr(self, "state", None), "game_loop", None),
+            frame=end_frame,
         )
 
+        # Write the full end-of-game stats report
+        self.game_stats.finalize(self, game_result, end_frame)
+
     async def on_unit_destroyed(self, unit_tag: int) -> None:
-        """Track destroyed townhalls for rebuild logic."""
+        """Track destroyed units for rebuild logic and end-game stats."""
         await super().on_unit_destroyed(unit_tag)
         dead_unit = self._all_units_previous_map.get(unit_tag)
         if dead_unit is not None:
+            # Feed into end-game stats tracker (overlords, bases)
+            self.game_stats.record_unit_destroyed(dead_unit)
+
             if dead_unit.type_id in {UnitID.HATCHERY, UnitID.LAIR, UnitID.HIVE}:
                 self._lost_hatchery_positions.append(dead_unit.position)
                 log.game_event(
