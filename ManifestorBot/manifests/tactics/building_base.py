@@ -52,10 +52,11 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 class BuildingAction(Enum):
-    """The three things a building can do on its own initiative."""
+    """The four things a building can do on its own initiative."""
     TRAIN         = auto()   # Queue a unit
     RESEARCH      = auto()   # Start an upgrade
     SET_RALLY     = auto()   # Move the rally point
+    CANCEL        = auto()   # Cancel this building (refunds full cost if in-progress)
 
 
 # ---------------------------------------------------------------------------
@@ -331,22 +332,31 @@ class BuildingTacticModule(ABC):
         return building.is_ready and building.build_progress >= 1.0
 
     def _can_afford_train(self, unit_type: UnitID, bot: "ManifestorBot") -> bool:
-        """Check minerals + vespene + supply for a training order."""
+        """Check minerals + vespene + supply for a training order.
+
+        Uses bot.available_minerals (minerals minus emergency reserve) so the
+        emergency extractor shield always has funds available.
+        """
         cost = bot.calculate_unit_value(unit_type)
         if cost is None:
             return False
+        spendable = getattr(bot, "available_minerals", bot.minerals)
         return (
-            bot.minerals >= cost.minerals
+            spendable >= cost.minerals
             and bot.vespene >= cost.vespene
             and (bot.supply_cap - bot.supply_used) >= bot.calculate_supply_cost(unit_type)
         )
 
     def _can_afford_research(self, upgrade: UpgradeId, bot: "ManifestorBot") -> bool:
-        """Check minerals + vespene for an upgrade order."""
+        """Check minerals + vespene for an upgrade order.
+
+        Uses bot.available_minerals so the emergency extractor reserve is respected.
+        """
         cost = bot.calculate_cost(upgrade)
         if cost is None:
             return False
-        return bot.minerals >= cost.minerals and bot.vespene >= cost.vespene
+        spendable = getattr(bot, "available_minerals", bot.minerals)
+        return spendable >= cost.minerals and bot.vespene >= cost.vespene
 
     def _already_researched(self, upgrade: UpgradeId, bot: "ManifestorBot") -> bool:
         """True if the upgrade is already complete."""

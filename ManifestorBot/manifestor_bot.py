@@ -145,6 +145,17 @@ class ManifestorBot(AresBot):
         # Positions of destroyed townhalls pending rebuild
         self._lost_hatchery_positions: list = []
 
+        # Positions of vespene geysers where an emergency shield Extractor was
+        # morphed by ExtractorShieldTactic.  CancelSafeExtractorTactic uses this
+        # set to find and cancel shield buildings once the threat has passed.
+        self._shield_extractor_positions: set = set()
+
+        # Minimum mineral reserve kept back from normal production spending so
+        # that there are always funds available for an emergency extractor morph.
+        # Respected by building_base._can_afford_train / _can_afford_research via
+        # the bot.available_minerals property.
+        self.emergency_mineral_reserve: int = 25
+
         # Pheromone map
         self.pheromone_map: Optional[PheromoneMap] = None
 
@@ -189,6 +200,12 @@ class ManifestorBot(AresBot):
         # Register unit abilities
         register_worker_abilities()
         register_construction_abilities()
+
+        # Register emergency extractor shield ability (drone survival)
+        from ManifestorBot.manifests.tactics.extractor_shield import (
+            register_extractor_shield_ability,
+        )
+        register_extractor_shield_ability()
 
         # Set workers per gas saturation
         self.mediator.set_workers_per_gas(amount=3)
@@ -498,6 +515,17 @@ class ManifestorBot(AresBot):
                 f"{idea.tactic_module.name} ({idea.confidence:.2f})"
             )
         
+    @property
+    def available_minerals(self) -> int:
+        """
+        Spendable minerals after holding back the emergency reserve.
+
+        Normal production modules call this instead of self.minerals directly
+        so that emergency_mineral_reserve is always available for an extractor
+        shield morph.  The reserve is 25 by default (one extractor cost).
+        """
+        return max(0, self.minerals - self.emergency_mineral_reserve)
+
     def change_strategy(self, new_strategy: Strategy, reason: str = "") -> None:
         """
         Change the current named strategy.
@@ -541,9 +569,11 @@ class ManifestorBot(AresBot):
         from ManifestorBot.manifests.tactics.base_defense import BaseDefenseTactic
         from ManifestorBot.manifests.tactics.commit_attack import CommitAttackTactic
         from ManifestorBot.manifests.tactics.crawler_tactics import CrawlerMoveTactic
+        from ManifestorBot.manifests.tactics.extractor_shield import ExtractorShieldTactic
 
         self.tactic_modules = [
             BuildingTactic(),
+            ExtractorShieldTactic(),  # Emergency drone survival — before MiningTactic
             MiningTactic(),
             BaseDefenseTactic(),
             CommitAttackTactic(),
@@ -613,8 +643,12 @@ class ManifestorBot(AresBot):
         rare in practice.
         """
         from ManifestorBot.manifests.tactics.crawler_tactics import CrawlerUprootBuildingTactic
+        from ManifestorBot.manifests.tactics.cancel_building import CancelDyingBuildingTactic
+        from ManifestorBot.manifests.tactics.extractor_shield import CancelSafeExtractorTactic
 
         self.building_modules = [
+            CancelDyingBuildingTactic(),   # Cancel critically-wounded in-progress buildings first
+            CancelSafeExtractorTactic(),   # Cancel shield extractors once threat has passed
             ZergRallyTactic(),             # Rally first — cheap and non-disruptive
             ZergQueenProductionTactic(),   # Queens before workers — they're infrastructure
             ZergOverlordProductionTactic(),# Train Overlords when supply is running short
