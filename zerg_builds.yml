@@ -28,20 +28,21 @@ BuildChoices:
 Builds:
 
   StandardOpener:
-    ConstantWorkerProductionTill: 15
+    ConstantWorkerProductionTill: 44
     OpeningBuildOrder:
       - 13 overlord
-      - 13 spawningpool
-      - 17 queen
-      - 19 hatchery @ nat
-      - 20 extractor
+      - 16 hatchery @ nat
+      - 18 extractor
+      - 17 spawningpool
+      - 19 queen
+      - 20 zergling x2
       - 21 queen
-      - 22 zergling x4
+      - 24 overlord
       - 100 zerglingmovementspeed
 
 
   EarlyAggression:
-    ConstantWorkerProductionTill: 12
+    ConstantWorkerProductionTill: 16
     OpeningBuildOrder:
       - 13 overlord
       - 12 spawningpool
@@ -55,7 +56,7 @@ Builds:
 
 
   TurtleEco:
-    ConstantWorkerProductionTill: 22
+    ConstantWorkerProductionTill: 44
     OpeningBuildOrder:
       - 13 overlord
       - 13 spawningpool

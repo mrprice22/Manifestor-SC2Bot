@@ -114,7 +114,8 @@ class ZergWorkerProductionTactic(BuildingTacticModule):
     in production. Other modules (especially ZergQueenProductionTactic) must
     therefore win via confidence, not via the idle check.
 
-    Max theoretical confidence: sat_sig(0.60) + econ_lag(0.27) + drag(0.0) = 0.87.
+    Max theoretical confidence: sat_sig(0.60) + econ_lag(0.27) + early(0.15) + drag(0.0) = 1.02.
+    Early game boost (+0.15) active when game_phase < 0.15 (~first 3 min).
     ZergQueenProductionTactic is set to 0.95 base to reliably beat this ceiling.
     """
 
@@ -190,6 +191,13 @@ class ZergWorkerProductionTactic(BuildingTacticModule):
             confidence += econ_sig
             evidence["economic_health_lag"] = econ_sig
 
+        # Sub-signal: early-game boost — drones should reliably beat army
+        # production in the first ~3 minutes so the economy gets established.
+        if heuristics.game_phase < 0.15:
+            early_boost = 0.15
+            confidence += early_boost
+            evidence["early_game_boost"] = early_boost
+
         # Sub-signal: strategy drone bias — explicit per-strategy drone priority
         profile = current_strategy.profile()
         if profile.drone_bias != 0.0:
@@ -197,10 +205,11 @@ class ZergWorkerProductionTactic(BuildingTacticModule):
             evidence["drone_bias"] = profile.drone_bias
 
         log.debug(
-            "ZergWorkerProductionTactic: confidence=%.3f (sat=%.3f econ_lag=%.3f drone_bias=%.3f delta=%.1f)",
+            "ZergWorkerProductionTactic: confidence=%.3f (sat=%.3f econ_lag=%.3f early=%.3f drone_bias=%.3f delta=%.1f)",
             confidence,
             sat_sig,
             evidence.get("economic_health_lag", 0.0),
+            evidence.get("early_game_boost", 0.0),
             evidence.get("drone_bias", 0.0),
             delta,
             frame=bot.state.game_loop,
@@ -1682,9 +1691,15 @@ class ZergQueenProductionTactic(BuildingTacticModule):
 # 6. Overlord Production
 # ---------------------------------------------------------------------------
 
-# Train an Overlord when supply headroom drops below this threshold.
-_OVERLORD_SUPPLY_THRESHOLD: int = 12  # was 4 — start building overlords earlier
-                                      #TODO: build this into the strategy profiles
+# Dynamic supply threshold: tight early (save larva for drones), loose late
+# (avoid supply blocks at scale).
+def _effective_overlord_threshold(bot: "ManifestorBot") -> int:
+    if bot.supply_cap < 30:
+        return 4   # early game: tight supply management, more larva for drones
+    elif bot.supply_cap < 60:
+        return 8   # mid game: moderate headroom
+    else:
+        return 12  # late game: aggressive overlord production to avoid blocks
 
 # Maximum overlords pending at once — allow 2 concurrent to break 80→200 supply faster.
 _MAX_PENDING_OVERLORDS: int = 2  # was 1
@@ -1741,12 +1756,13 @@ class ZergOverlordProductionTactic(BuildingTacticModule):
     ) -> Optional[BuildingIdea]:
         supply_left = bot.supply_left
         pending_overlords = bot.already_pending(UnitID.OVERLORD)
+        threshold = _effective_overlord_threshold(bot)
 
         log.debug(
             "ZergOverlordProductionTactic: supply_left=%d pending_overlords=%.1f threshold=%d",
             supply_left,
             pending_overlords,
-            _OVERLORD_SUPPLY_THRESHOLD,
+            threshold,
             frame=bot.state.game_loop,
         )
 
@@ -1754,10 +1770,10 @@ class ZergOverlordProductionTactic(BuildingTacticModule):
         if pending_overlords >= _MAX_PENDING_OVERLORDS:
             return None
 
-        if supply_left > _OVERLORD_SUPPLY_THRESHOLD:
+        if supply_left > threshold:
             return None  # not supply-pressured yet
 
-        deficit = _OVERLORD_SUPPLY_THRESHOLD - supply_left
+        deficit = threshold - supply_left
         # Scale confidence: critical at 0 supply left, moderate near threshold
         confidence = min(1.0, 0.70 + deficit * 0.08)
         evidence = {

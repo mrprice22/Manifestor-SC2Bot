@@ -74,6 +74,7 @@ from ManifestorBot.manifests.territory_border_map import (
 )
 from ManifestorBot.manifests.strategy_machine import StrategyMachine
 from ManifestorBot.manifests.defendable_territory import DefendableTerritory
+from ManifestorBot.manifests.tactics.extractor_trick import ExtractorTrick
 
 
 
@@ -104,6 +105,9 @@ class ManifestorBot(AresBot):
         
         # Strategy state machine
         self.strategy_machine: StrategyMachine = StrategyMachine()
+
+        # Early-game extractor trick (supply-block bypass)
+        self.extractor_trick: ExtractorTrick = ExtractorTrick()
 
         # Managers (created in on_start)
         self.heuristic_manager: Optional[HeuristicManager] = None
@@ -269,6 +273,9 @@ class ManifestorBot(AresBot):
 
         # STAGE 2b: Defensive territory perimeter (expansion + patrol gating)
         self.defendable_territory.update(self, self.heuristic_manager.get_state())
+
+        # STAGE 3: Early-game extractor trick (supply-block bypass)
+        await self.extractor_trick.update(self)
 
         # STAGE 7: Unit idea generation with suppression
         await self._generate_unit_ideas()
