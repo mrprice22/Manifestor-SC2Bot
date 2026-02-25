@@ -619,7 +619,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         sacrifice_ok  = False,
         drone_bias    = +0.30,   # drone as hard as possible; economy IS the strategy
         expand_bias   = +0.25,   # expand early and often; more bases = more drones
-        gas_ratio_bias=  0.00,   # neutral; needs gas for hydras/lurkers eventually
+        gas_ratio_bias= -0.25,   # cut gas workers — drones should mine minerals for spines
         opening     = "TurtleEco",
         composition_curve = [
             (0.00, CompositionTarget(

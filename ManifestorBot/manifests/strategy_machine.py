@@ -89,11 +89,14 @@ _RULES: list[_StrategyRule] = [
     # Enemy is threatening our base AND we're badly outgunned.
     # threat_level 0.65 ≈ enemy army ~35 tiles from our townhall.
     # army_value_ratio < 0.65 = we have significantly less army.
+    # game_phase >= 0.30: don't trigger before Lair/spines are viable —
+    #   at phase < 0.30 we have no static defence to hold the fortress.
     _StrategyRule(
         strategy=Strategy.DRONE_ONLY_FORTRESS,
         enter=lambda h: (
             h.threat_level >= 0.65
             and h.army_value_ratio < 0.65
+            and h.game_phase >= 0.30
         ),
         emergency=True,
     ),

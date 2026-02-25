@@ -90,7 +90,11 @@ _DEFAULT_MAX_STRUCTURES: int = 1
 def _max_for_structure(structure_type: UnitID, bot) -> int:
     """Return the max allowed count for a structure, with dynamic caps."""
     if structure_type == UnitID.EXTRACTOR:
-        return len(bot.townhalls.ready) * 2
+        # Under fortress: 1 extractor per base (save drones for spines, not gas)
+        from ManifestorBot.manifests.strategy import Strategy
+        if bot.current_strategy == Strategy.DRONE_ONLY_FORTRESS:
+            return max(1, bot.townhalls.ready.amount)
+        return bot.townhalls.ready.amount * 2
     return _MAX_STRUCTURE_COUNT.get(structure_type, _DEFAULT_MAX_STRUCTURES)
 
 # ---------------------------------------------------------------------------
@@ -2081,3 +2085,155 @@ class ZergGasWorkerTactic(BuildingTacticModule):
 
         # Pick the closest one to the gas building to minimize travel time
         return min(candidates, key=lambda d: d.distance_to(gas_building.position))
+
+
+# ---------------------------------------------------------------------------
+# 9. Static Defence Production (Spine / Spore Crawlers)
+# ---------------------------------------------------------------------------
+
+# Targets per base under DRONE_ONLY_FORTRESS
+_SPINES_PER_BASE: int = 3
+_SPORES_PER_BASE: int = 2
+
+# Minimum minerals before we invest in crawlers
+_CRAWLER_MIN_MINERALS: int = 150
+
+# Threat level that triggers emergency static defence outside of fortress
+_EMERGENCY_THREAT_FOR_CRAWLERS: float = 0.70
+
+
+class ZergStaticDefenseTactic(BuildingTacticModule):
+    """
+    Build Spine and Spore Crawlers as permanent static army under DRONE_ONLY_FORTRESS.
+
+    Philosophy: spine/spore crawlers don't count toward the 200-supply cap, so
+    converting drones into crawlers creates a supply-exempt defensive army that
+    can hold the fortress indefinitely while the economy snowballs behind it.
+
+    Firing conditions:
+      - DRONE_ONLY_FORTRESS strategy (primary)
+      - OR: threat_level >= _EMERGENCY_THREAT_FOR_CRAWLERS (emergency outside fortress)
+
+    Targets per base:
+      - 3 Spine Crawlers (ground defence)
+      - 2 Spore Crawlers (anti-air + detection)
+
+    Uses the ConstructionQueue exactly like ZergStructureBuildTactic.
+    The queue allows only one PENDING/CLAIMED order per structure type at a time,
+    so crawlers are built sequentially — intentional, to avoid sacrificing many
+    drones simultaneously.
+
+    Confidence: 0.88 under fortress, 0.80 under emergency threat.
+    Anchor: Hatchery / Lair / Hive.
+    """
+
+    BUILDING_TYPES = frozenset({
+        UnitID.HATCHERY,
+        UnitID.LAIR,
+        UnitID.HIVE,
+    })
+
+    def is_applicable(self, building: "Unit", bot: "ManifestorBot") -> bool:
+        if building.type_id not in self.BUILDING_TYPES:
+            return False
+        if not self._building_is_ready(building):
+            return False
+        # Spine crawlers require a Spawning Pool
+        if not bot.structures(UnitID.SPAWNINGPOOL).ready:
+            return False
+        if bot.minerals < _CRAWLER_MIN_MINERALS:
+            return False
+        return True
+
+    def generate_idea(
+        self,
+        building: "Unit",
+        bot: "ManifestorBot",
+        heuristics: "HeuristicState",
+        current_strategy: "Strategy",
+        counter_ctx,
+    ) -> Optional[BuildingIdea]:
+        from ManifestorBot.manifests.strategy import Strategy
+        is_fortress = current_strategy == Strategy.DRONE_ONLY_FORTRESS
+        is_emergency = heuristics.threat_level >= _EMERGENCY_THREAT_FOR_CRAWLERS
+
+        if not (is_fortress or is_emergency):
+            return None
+
+        confidence = 0.88 if is_fortress else 0.80
+        evidence: dict = {
+            "is_fortress": is_fortress,
+            "threat_level": round(heuristics.threat_level, 2),
+        }
+
+        num_bases = max(1, bot.townhalls.ready.amount)
+
+        # ── Spine Crawlers (ground defence) ─────────────────────────────
+        target_spines = num_bases * _SPINES_PER_BASE
+        existing_spines = bot.structures(UnitID.SPINECRAWLER).amount
+        pending_spines = bot.construction_queue.count_active_of_type(UnitID.SPINECRAWLER)
+        if existing_spines + pending_spines < target_spines:
+            evidence["spine_needed"] = target_spines - existing_spines - pending_spines
+            evidence["spine_existing"] = existing_spines
+            log.info(
+                "ZergStaticDefenseTactic: SPINECRAWLER needed "
+                "(have=%d pending=%d target=%d)",
+                existing_spines, pending_spines, target_spines,
+                frame=bot.state.game_loop,
+            )
+            return BuildingIdea(
+                building_module=self,
+                action=BuildingAction.TRAIN,
+                confidence=confidence,
+                evidence=evidence,
+                train_type=UnitID.SPINECRAWLER,
+            )
+
+        # ── Spore Crawlers (anti-air + detection) ───────────────────────
+        target_spores = num_bases * _SPORES_PER_BASE
+        existing_spores = bot.structures(UnitID.SPORECRAWLER).amount
+        pending_spores = bot.construction_queue.count_active_of_type(UnitID.SPORECRAWLER)
+        if existing_spores + pending_spores < target_spores:
+            evidence["spore_needed"] = target_spores - existing_spores - pending_spores
+            evidence["spore_existing"] = existing_spores
+            log.info(
+                "ZergStaticDefenseTactic: SPORECRAWLER needed "
+                "(have=%d pending=%d target=%d)",
+                existing_spores, pending_spores, target_spores,
+                frame=bot.state.game_loop,
+            )
+            return BuildingIdea(
+                building_module=self,
+                action=BuildingAction.TRAIN,
+                confidence=confidence,
+                evidence=evidence,
+                train_type=UnitID.SPORECRAWLER,
+            )
+
+        # All crawler targets met
+        return None
+
+    def execute(self, building: "Unit", idea: BuildingIdea, bot: "ManifestorBot") -> bool:
+        if idea.train_type is None:
+            return False
+
+        order = ConstructionOrder(
+            structure_type=idea.train_type,
+            base_location=building.position,
+            priority=85,
+            created_frame=bot.state.game_loop,
+        )
+        accepted = bot.construction_queue.enqueue(order)
+        if accepted:
+            log.game_event(
+                "STATIC_DEFENCE",
+                f"{idea.train_type.name} near hatch@{building.position}",
+                frame=bot.state.game_loop,
+            )
+        else:
+            log.debug(
+                "ZergStaticDefenseTactic: queue rejected %s (already pending?)",
+                idea.train_type.name,
+                frame=bot.state.game_loop,
+            )
+        return accepted

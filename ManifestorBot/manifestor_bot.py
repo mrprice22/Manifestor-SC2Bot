@@ -42,6 +42,7 @@ from ManifestorBot.manifests.tactics.building_tactics import (
     ZergGasWorkerTactic,
     ZergTechMorphTactic,
     ZergHatcheryRebuildTactic,
+    ZergStaticDefenseTactic,
 )
 from ManifestorBot.manifests.tactics.queen_tactics import (
     QueenInjectTactic,
@@ -302,6 +303,13 @@ class ManifestorBot(AresBot):
         for tumor in self.structures(UnitID.CREEPTUMORBURROWED):
             all_candidate_units.append(tumor)
 
+        # Uprooted crawlers are units (not structures) and may be classified
+        # as BUILDING role by Ares — add them explicitly so CrawlerMoveTactic fires.
+        for crawler in self.units(UnitID.SPINECRAWLERUPROOTED):
+            all_candidate_units.append(crawler)
+        for crawler in self.units(UnitID.SPORECRAWLERUPROOTED):
+            all_candidate_units.append(crawler)
+
         for worker in self.workers:
             unit_role = self._get_unit_role(worker.tag)
             if unit_role in {UnitRole.BUILDING}:
@@ -525,12 +533,14 @@ class ManifestorBot(AresBot):
         from ManifestorBot.manifests.tactics.patrol import OpportunisticPatrolTactic
         from ManifestorBot.manifests.tactics.base_defense import BaseDefenseTactic
         from ManifestorBot.manifests.tactics.commit_attack import CommitAttackTactic
+        from ManifestorBot.manifests.tactics.crawler_tactics import CrawlerMoveTactic
 
         self.tactic_modules = [
             BuildingTactic(),
             MiningTactic(),
             BaseDefenseTactic(),
             CommitAttackTactic(),
+            CrawlerMoveTactic(),      # Uprooted crawlers: move to target then root
             StutterForwardTactic(),
             HarassWorkersTactic(),
             FlankTactic(),
@@ -595,6 +605,8 @@ class ManifestorBot(AresBot):
         here only matters when two ideas have equal confidence — which is
         rare in practice.
         """
+        from ManifestorBot.manifests.tactics.crawler_tactics import CrawlerUprootBuildingTactic
+
         self.building_modules = [
             ZergRallyTactic(),             # Rally first — cheap and non-disruptive
             ZergQueenProductionTactic(),   # Queens before workers — they're infrastructure
@@ -604,8 +616,10 @@ class ManifestorBot(AresBot):
             ZergUpgradeResearchTactic(),   # Upgrades when affordable
             ZergTechMorphTactic(),         # Hatchery → Lair → Hive tech progression
             ZergHatcheryRebuildTactic(),   # Rebuild destroyed hatcheries (priority 90 > expand 80)
+            ZergStaticDefenseTactic(),     # Spine/Spore crawlers under fortress (supply-exempt army)
             ZergStructureBuildTactic(),    # Build structures when needed
             ZergGasWorkerTactic(),         # Ensure gas workers are always assigned
+            CrawlerUprootBuildingTactic(), # Uproot orphaned crawlers after base loss
         ]
 
         log.info(

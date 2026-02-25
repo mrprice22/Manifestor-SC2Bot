@@ -164,6 +164,7 @@ _TACTIC_TO_GOAL: dict[str, str] = {
     "QueenInjectTactic":      "inject",
     "QueenCreepSpreadTactic": "spread_creep",
     "TumorSpreadTactic":      "spread_creep",
+    "CrawlerMoveTactic":      "reposition",
 }
 
 
