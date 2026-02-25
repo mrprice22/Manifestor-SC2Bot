@@ -28,7 +28,7 @@ BuildChoices:
 Builds:
 
   StandardOpener:
-    ConstantWorkerProductionTill: 20
+    ConstantWorkerProductionTill: 15
     OpeningBuildOrder:
       - 13 overlord
       - 13 spawningpool
@@ -41,7 +41,7 @@ Builds:
 
 
   EarlyAggression:
-    ConstantWorkerProductionTill: 16
+    ConstantWorkerProductionTill: 12
     OpeningBuildOrder:
       - 13 overlord
       - 12 spawningpool

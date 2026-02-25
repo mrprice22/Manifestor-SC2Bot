@@ -74,7 +74,17 @@ class MineAbility(Ability):
                     if not nearby_minerals:
                         return True  # base mined out — reassign
                     if closest_th.surplus_harvesters > 0:
-                        return True  # genuinely over-saturated — reassign
+                        # Only reassign if there's actually an under-saturated
+                        # base to move to.  Without this check the drone
+                        # oscillates every frame: can_use fires → execute
+                        # returns the nearest mineral (at the same full base)
+                        # → new gather command → repeat.
+                        has_destination = any(
+                            th.surplus_harvesters < 0
+                            and bool(bot.mineral_field.closer_than(10, th.position))
+                            for th in bot.townhalls.ready
+                        )
+                        return has_destination
                 return False  # gather order is fine — let Ares handle it
 
         # Need somewhere to mine
@@ -143,7 +153,16 @@ class MineAbility(Ability):
             if best_target is not None:
                 return best_target
 
-        # 3. Any mineral (last resort)
+            # All ready townhalls are at/above ideal saturation.
+            # Don't reassign — returning None keeps the drone's existing
+            # gather order and prevents the oversaturation oscillation bug
+            # (drone ping-pongs between a mineral patch at the same full base
+            # each frame because step 3 used to send it back to the nearest
+            # mineral, which was at that same oversaturated base).
+            return None
+
+        # 3. No ready townhalls yet (early game — hatchery still morphing).
+        #    Mine the nearest mineral so drones don't sit idle.
         if bot.mineral_field:
             return bot.mineral_field.closest_to(unit.position)
 
