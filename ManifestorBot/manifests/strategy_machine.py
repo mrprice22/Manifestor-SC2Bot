@@ -46,6 +46,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Optional
 
+import config
 from ManifestorBot.manifests.strategy import Strategy
 
 if TYPE_CHECKING:
@@ -193,6 +194,21 @@ class StrategyMachine:
         self._candidate: Optional[Strategy] = None
         self._candidate_count: int = 0
 
+        # Resolve FORCE_STRATEGY from config (None = normal operation)
+        force_name: Optional[str] = getattr(config, "FORCE_STRATEGY", None)
+        if force_name is not None:
+            try:
+                self._forced: Optional[Strategy] = Strategy[force_name]
+                log.warning("StrategyMachine: FORCED to %s for entire game", force_name)
+            except KeyError:
+                log.error(
+                    "StrategyMachine: FORCE_STRATEGY=%r is not a valid Strategy name — ignoring",
+                    force_name,
+                )
+                self._forced = None
+        else:
+            self._forced = None
+
     def update(self, bot: 'ManifestorBot', h: 'HeuristicState') -> None:
         """
         Evaluate the priority table and switch strategies if warranted.
@@ -200,6 +216,12 @@ class StrategyMachine:
         """
         # Guard: only run if we have townhalls (game is in progress)
         if not bot.townhalls:
+            return
+
+        # Forced strategy: lock to a single strategy, skip all normal logic
+        if self._forced is not None:
+            if bot.current_strategy != self._forced:
+                bot.change_strategy(self._forced, reason="forced")
             return
 
         frame = bot.state.game_loop

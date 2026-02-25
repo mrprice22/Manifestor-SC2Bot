@@ -28,3 +28,20 @@ OPPONENT_DIFFICULTY = "Hard"  # VeryEasy, Easy, Medium, Hard, VeryHard, etc.
 # ===== GAME MODE =====
 # Set to True to play in realtime (like a human), False for faster simulation
 REALTIME = False
+
+# ===== STRATEGY MACHINE =====
+# Set to None to let the state machine run normally (recommended for live games).
+# Set to a Strategy name string to lock the bot to that strategy for the entire
+# game — useful for testing a specific strategy at different game stages.
+#
+# Valid values (use the exact string):
+#   None                   — normal state machine (default)
+#   "STOCK_STANDARD"       — textbook macro Zerg
+#   "JUST_GO_PUNCH_EM"     — press army advantage
+#   "ALL_IN"               — all-in overwhelm
+#   "KEEP_EM_BUSY"         — initiative harassment
+#   "WAR_ON_SANITY"        — multi-front economic chaos
+#   "WAR_OF_ATTRITION"     — hold-and-grind defensive
+#   "BLEED_OUT"            — guerrilla/harassment pivot
+#   "DRONE_ONLY_FORTRESS"  — emergency turtle
+FORCE_STRATEGY = "STOCK_STANDARD"
