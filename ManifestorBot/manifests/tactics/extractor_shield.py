@@ -6,8 +6,8 @@ vespene geyser is nearby, the drone can morph into an Extractor.
 
 Why this works:
   - A drone has ~40 HP.  An Extractor has 500 HP with 1 armor — 12x more durable.
-  - Cancelling an in-progress Extractor returns 100% of the 25-mineral cost
-    AND gives the drone back.  Net cost: zero.  Net benefit: the drone survives.
+  - Cancelling an in-progress Extractor returns 75% of the 25-mineral cost (~18 minerals)
+    AND gives the drone back.  Net cost: ~6 minerals.  Net benefit: the drone survives.
 
 Two tactics work together:
   1. ExtractorShieldTactic (unit tactic) — triggers on imperilled drones,
@@ -398,11 +398,12 @@ class CancelSafeExtractorTactic(BuildingTacticModule):
                 shield_positions.discard(pos)
                 break
 
+        refund = int(EXTRACTOR_COST * 0.75)
         log.game_event(
             "EXTRACTOR_SHIELD_CANCEL",
             f"Cancelling shield extractor tag={building.tag} "
             f"progress={round(building.build_progress, 2)} — threat passed, "
-            f"reclaiming drone + {EXTRACTOR_COST} minerals",
+            f"reclaiming drone + ~{refund} minerals (75% of {EXTRACTOR_COST})",
             frame=getattr(getattr(bot, "state", None), "game_loop", None),
         )
 

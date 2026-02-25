@@ -2,15 +2,26 @@
 CancelDyingBuildingTactic — cancel buildings that are about to die mid-construction.
 
 When a building is under construction (build_progress < 1.0) and is critically
-wounded with enemy units nearby, cancelling it returns the FULL construction cost
+wounded with enemy units nearby, cancelling it returns 75% of the construction cost
 plus restores the drone for Zerg.  This is almost always better than letting the
-enemy destroy it.
+enemy destroy it (which returns nothing).
 
 SC2 refund rules:
-  - Zerg:   cancelling a building in progress returns 100% of the mineral/gas cost
+  - Zerg:   cancelling a building in progress returns 75% of the mineral/gas cost
             AND restores the drone that was morphed into the structure.
-  - Terran: 100% refund on all buildings during construction.
-  - Protoss: 100% refund during construction (Nexus/gateway/etc.).
+  - Terran: 75% refund on all buildings during construction.
+  - Protoss: 75% refund during construction.
+
+IMPORTANT — health ratio for buildings under construction:
+  In SC2, `unit.health_max` is always the FINAL fully-built max HP, but
+  `unit.health` grows with build_progress.  A healthy building at 10% progress
+  has health = health_max * 0.10, giving health/health_max = 0.10.
+  Comparing that raw ratio against CRITICAL_HEALTH (0.30) would cancel every
+  building early in construction even when it is undamaged.
+
+  The correct check is `health / (health_max * build_progress)`, which equals
+  1.0 for an undamaged building regardless of build stage, and drops below 1.0
+  only when the building is actually taking damage.
 
 Cancellation fires when:
   (a) health_ratio < CRITICAL_HEALTH (0.30)  — unconditional, enemy or not
@@ -65,6 +76,30 @@ _NON_COMBATANT_TYPES: frozenset = frozenset({
 })
 
 
+def _effective_health_ratio(building) -> float:
+    """
+    Return the true damage-taken ratio for a building, accounting for the fact
+    that health scales with build_progress during construction.
+
+    For a building under construction:
+      expected_health = health_max * build_progress   (health when undamaged)
+      effective_ratio = health / expected_health
+    This equals 1.0 when undamaged at any build stage, and < 1.0 only when
+    the building has actually taken damage relative to its current stage.
+
+    For a complete building (build_progress == 1.0):
+      effective_ratio = health / health_max   (standard ratio)
+    """
+    if building.health_max <= 0:
+        return 1.0
+    if building.build_progress < 1.0:
+        expected = building.health_max * building.build_progress
+        if expected < 1.0:
+            return 1.0  # Too early in construction to have meaningful HP; treat as undamaged
+        return building.health / expected
+    return building.health / building.health_max
+
+
 # ── tactic ─────────────────────────────────────────────────────────────────
 
 class CancelDyingBuildingTactic(BuildingTacticModule):
@@ -99,7 +134,9 @@ class CancelDyingBuildingTactic(BuildingTacticModule):
         if building.health_max <= 0:
             return False
 
-        health_ratio = building.health / building.health_max
+        # Use effective ratio: normalised against expected HP at current build stage.
+        # A healthy building always reads 1.0 here regardless of build_progress.
+        health_ratio = _effective_health_ratio(building)
 
         # Unconditional cancel when critically low — building is almost dead
         if health_ratio < CRITICAL_HEALTH:
@@ -130,7 +167,7 @@ class CancelDyingBuildingTactic(BuildingTacticModule):
         if building.health_max <= 0:
             return None
 
-        health_ratio = building.health / building.health_max
+        health_ratio = _effective_health_ratio(building)
 
         confidence = 0.70
         evidence: dict = {
@@ -208,10 +245,11 @@ class CancelDyingBuildingTactic(BuildingTacticModule):
         log.game_event(
             "BUILDING_CANCEL",
             f"{building.type_id.name} tag={building.tag} "
-            f"hp={round(building.health / building.health_max, 2)} "
-            f"progress={round(building.build_progress, 2)} — cancelling for full refund",
+            f"effective_hp={round(_effective_health_ratio(building), 2)} "
+            f"progress={round(building.build_progress, 2)} — cancelling for 75% refund",
             frame=getattr(getattr(bot, "state", None), "game_loop", None),
         )
 
         building(AbilityId.CANCEL_BUILDINPROGRESS)
         return True
+

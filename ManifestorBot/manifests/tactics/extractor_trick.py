@@ -72,6 +72,10 @@ class ExtractorTrick:
         self._extractor_tag: Optional[int] = None
         self._ordered_frame: int = 0
         self._drone_queued: bool = False
+        # Position of the geyser we ordered the extractor on — used to identify
+        # our specific in-progress extractor so we don't accidentally cancel one
+        # placed by ZergStructureBuildTactic or ExtractorShieldTactic.
+        self._target_geyser_pos: Optional[object] = None
 
     async def update(self, bot: "ManifestorBot") -> None:
         """Call once per on_step. Drives the state machine."""
@@ -134,6 +138,7 @@ class ExtractorTrick:
         # Order the drone to build the extractor
         drone(AbilityId.ZERGBUILD_EXTRACTOR, geyser)
         self._ordered_frame = frame
+        self._target_geyser_pos = geyser.position
         self._phase = _Phase.BUILDING
         self._drone_queued = False
 
@@ -156,9 +161,14 @@ class ExtractorTrick:
             self._phase = _Phase.DONE
             return
 
-        # Look for an in-progress extractor (build_progress < 1.0)
+        # Look for an in-progress extractor at the specific geyser we targeted.
+        # We must NOT pick up extractors started by ZergStructureBuildTactic or
+        # ExtractorShieldTactic — only the one this trick ordered.
         for ext in bot.structures(UnitID.EXTRACTOR):
             if ext.build_progress < 1.0:
+                if self._target_geyser_pos is not None:
+                    if ext.position.distance_to(self._target_geyser_pos) > _GEYSER_OCCUPIED_RADIUS:
+                        continue  # Different extractor — not ours
                 self._extractor_tag = ext.tag
                 self._phase = _Phase.WAITING_DRONE
 

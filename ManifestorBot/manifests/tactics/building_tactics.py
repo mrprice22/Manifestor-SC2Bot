@@ -1695,14 +1695,14 @@ class ZergQueenProductionTactic(BuildingTacticModule):
 # (avoid supply blocks at scale).
 def _effective_overlord_threshold(bot: "ManifestorBot") -> int:
     if bot.supply_cap < 30:
-        return 4   # early game: tight supply management, more larva for drones
+        return 3   # early game: tight supply management, more larva for drones
     elif bot.supply_cap < 60:
-        return 8   # mid game: moderate headroom
+        return 7   # mid game: moderate headroom
     else:
         return 12  # late game: aggressive overlord production to avoid blocks
 
 # Maximum overlords pending at once — allow 2 concurrent to break 80→200 supply faster.
-_MAX_PENDING_OVERLORDS: int = 2  # was 1
+_MAX_PENDING_OVERLORDS: int = 1  # was 1
 
 
 class ZergOverlordProductionTactic(BuildingTacticModule):
