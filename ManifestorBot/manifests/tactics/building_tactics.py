@@ -75,15 +75,12 @@ _STRUCTURE_PRIORITY = [
 ]
 
 # Maximum number of each structure type we'll ever build. Any type not
-# listed here defaults to 1. Hatcheries are handled by _maybe_expand()
-# and are NOT in this map. Spore/Spine Crawlers are treated as units
-# and bypass this system entirely.
-# Extractors are also absent — their cap is dynamic (2 per base), see
-# _max_for_structure().
-_MAX_STRUCTURE_COUNT: dict[UnitID, int] = {
-    UnitID.EVOLUTIONCHAMBER:  2,  # dual upgrade lanes (melee + ranged / armor)
-    UnitID.NYDUSNETWORK:      3,
-}
+# listed here defaults to 1 (_DEFAULT_MAX_STRUCTURES). Hatcheries are
+# handled by _maybe_expand() and are NOT in this map. Spore/Spine Crawlers
+# are treated as units and bypass this system entirely.
+# Extractors are also absent — their cap is dynamic (1 per base + depleted
+# geyser bonus), see _max_for_structure().
+_MAX_STRUCTURE_COUNT: dict[UnitID, int] = {}
 _DEFAULT_MAX_STRUCTURES: int = 1
 
 # Optional tech structures that should not be built until the queen quota is met.
@@ -97,6 +94,22 @@ _QUEEN_GATED_STRUCTURES: frozenset = frozenset({
     UnitID.INFESTATIONPIT,
     UnitID.ULTRALISKCAVERN,
 })
+
+# Tech structures that also require a minimum combat army before being built.
+# Spending 150–350 minerals on these while the army is empty makes the bot
+# defenceless in the early game.
+_ARMY_GATED_STRUCTURES: frozenset = frozenset({
+    UnitID.ROACHWARREN,
+    UnitID.EVOLUTIONCHAMBER,
+    UnitID.HYDRALISKDEN,
+    UnitID.SPIRE,
+    UnitID.BANELINGNEST,
+    UnitID.INFESTATIONPIT,
+    UnitID.ULTRALISKCAVERN,
+})
+# Minimum combat supply (excludes workers, queens, overlords) required
+# before queueing any army-gated structure.
+_MIN_ARMY_SUPPLY_FOR_TECH: int = 10
 
 
 def _building_at_capacity(structure_type: UnitID, existing_ready, bot) -> bool:
@@ -126,11 +139,17 @@ def _building_at_capacity(structure_type: UnitID, existing_ready, bot) -> bool:
 def _max_for_structure(structure_type: UnitID, bot) -> int:
     """Return the max allowed count for a structure, with dynamic caps."""
     if structure_type == UnitID.EXTRACTOR:
-        # Under fortress: 1 extractor per base (save drones for spines, not gas)
-        from ManifestorBot.manifests.strategy import Strategy
-        if bot.current_strategy == Strategy.DRONE_ONLY_FORTRESS:
-            return max(1, bot.townhalls.ready.amount)
-        return bot.townhalls.ready.amount * 2
+        # 1 extractor per ready base. Allow +1 for each existing extractor
+        # sitting on a depleted geyser (< 50 vespene remaining), so the
+        # second geyser at that base opens automatically when the first
+        # runs dry — but not before.
+        base_cap = bot.townhalls.ready.amount
+        depleted_bonus = 0
+        for gas in bot.gas_buildings.ready:
+            nearby = list(bot.vespene_geyser.closer_than(1.5, gas.position))
+            if nearby and nearby[0].vespene_contents < 50:
+                depleted_bonus += 1
+        return max(1, base_cap + depleted_bonus)
     return _MAX_STRUCTURE_COUNT.get(structure_type, _DEFAULT_MAX_STRUCTURES)
 
 # ---------------------------------------------------------------------------
@@ -1160,6 +1179,11 @@ class ZergStructureBuildTactic(BuildingTacticModule):
         UnitID.HIVE,
     })
 
+    # Class-level throttle: frame when the last structure was successfully
+    # enqueued. All hatchery instances share this value so at most one new
+    # structure is queued per building-loop tick, even with multiple hatcheries.
+    _last_enqueued_frame: int = -1
+
     def is_applicable(self, building, bot) -> bool:
         if building.type_id not in self.BUILDING_TYPES:
             return False
@@ -1197,6 +1221,17 @@ class ZergStructureBuildTactic(BuildingTacticModule):
         if not opening_done:
             return None
 
+        # ── Building cooldown: space out structure enqueues ──────────────
+        # Prevents rapid-fire structure queuing across consecutive building
+        # loop ticks (each 20 frames apart). Without this, two hatcheries
+        # can spend 300–700 minerals on tech buildings within 2–3 seconds.
+        _BUILDING_COOLDOWN_FRAMES = 120  # ~5.5 seconds between new structures
+        if (
+            ZergStructureBuildTactic._last_enqueued_frame >= 0
+            and (bot.state.game_loop - ZergStructureBuildTactic._last_enqueued_frame) < _BUILDING_COOLDOWN_FRAMES
+        ):
+            return None
+
         # Counter-driven structure urgency: if the counter table wants units that
         # require structures we don't have, try to build those structures first.
         if counter_ctx and counter_ctx.priority_train_types:
@@ -1211,7 +1246,8 @@ class ZergStructureBuildTactic(BuildingTacticModule):
                     existing = bot.structures(structure_type).amount
                     pending = bot.construction_queue.count_active_of_type(structure_type)
                     max_allowed = _max_for_structure(structure_type, bot)
-                    if existing + pending < max_allowed:
+                    ares_pending = bot.already_pending(structure_type)
+                    if existing + pending < max_allowed and existing + ares_pending < max_allowed:
                         confidence = 0.88  # above normal 0.80, below queen 0.97
                         evidence = {"counter_structure": structure_type.name, "urgent": True}
                         log.info(
@@ -1247,14 +1283,27 @@ class ZergStructureBuildTactic(BuildingTacticModule):
                 )
                 continue
 
+            # ── Army gate: skip tech buildings until minimum combat supply ──
+            if structure_type in _ARMY_GATED_STRUCTURES:
+                _WORKER_AND_SUPPORT = {
+                    UnitID.DRONE, UnitID.QUEEN, UnitID.OVERLORD,
+                    UnitID.OVERSEER, UnitID.OVERLORDCOCOON,
+                }
+                _combat_supply = sum(
+                    SUPPLY_COST.get(u.type_id, 2)
+                    for u in bot.units.exclude_type(_WORKER_AND_SUPPORT)
+                )
+                if _combat_supply < _MIN_ARMY_SUPPLY_FOR_TECH:
+                    log.debug(
+                        "ZergStructureBuildTactic: %s gated — combat_supply=%d < %d",
+                        structure_type.name, _combat_supply, _MIN_ARMY_SUPPLY_FOR_TECH,
+                        frame=bot.state.game_loop,
+                    )
+                    continue
+
             # ── Hard cap on structure count ────────────────────────────
             max_allowed = _max_for_structure(structure_type, bot)
             existing_count = bot.structures(structure_type).amount
-            # NOTE: Do NOT add bot.already_pending() here — it double-counts
-            # buildings under construction that bot.structures() already
-            # includes.  count_active_of_type covers PENDING + CLAIMED +
-            # BUILDING orders in the construction queue, which is the only
-            # additional source we need.
             pending_count = bot.construction_queue.count_active_of_type(structure_type)
             total = existing_count + pending_count
 
@@ -1262,6 +1311,20 @@ class ZergStructureBuildTactic(BuildingTacticModule):
                 log.debug(
                     "ZergStructureBuildTactic: %s at cap (%d/%d) — skipping",
                     structure_type.name, total, max_allowed,
+                    frame=bot.state.game_loop,
+                )
+                continue
+
+            # Safety net: also check Ares' own tracking. When an order is
+            # falsely marked FAILED (drone "abandoned" but Ares actually sent
+            # a different worker), our queue loses track but already_pending
+            # still counts the drone walking or morphing. This prevents
+            # duplicate request_zerg_placement calls.
+            ares_pending = bot.already_pending(structure_type)
+            if existing_count + ares_pending >= max_allowed:
+                log.debug(
+                    "ZergStructureBuildTactic: %s at cap via already_pending (%d+%d/%d) — skipping",
+                    structure_type.name, existing_count, ares_pending, max_allowed,
                     frame=bot.state.game_loop,
                 )
                 continue
@@ -1377,6 +1440,7 @@ class ZergStructureBuildTactic(BuildingTacticModule):
 
         accepted = bot.construction_queue.enqueue(order)
         if accepted:
+            ZergStructureBuildTactic._last_enqueued_frame = bot.state.game_loop
             log.game_event(
                 "BUILD_ENQUEUED",
                 f"{idea.train_type.name} near {base_location}",

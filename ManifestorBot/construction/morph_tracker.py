@@ -292,7 +292,8 @@ class MorphTracker:
         already sent a worker and the morph is in progress — transition directly
         to BUILDING instead of FAILED.
         """
-        _GRACE_FRAMES = 15  # allow Ares time to issue the command
+        _GRACE_FRAMES = 200  # allow Ares async placement time (~9s) — the real drone
+        # may still be walking; structures appear 28–52 frames after false-abandon
         current_unit_tags: Set[int] = {u.tag for u in bot.units}
 
         for order in queue.active():
@@ -304,7 +305,7 @@ class MorphTracker:
                 continue  # handled by _detect_morph_starts as disappeared
 
             # Don't check until the drone has had time to receive the command
-            if order.dispatched_frame and (frame - order.dispatched_frame) < _GRACE_FRAMES:
+            if order.dispatched_frame and (frame - order.dispatched_frame) <= _GRACE_FRAMES:
                 continue
 
             # Drone is still alive — check if it still has a build order
