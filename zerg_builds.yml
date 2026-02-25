@@ -31,12 +31,11 @@ Builds:
     ConstantWorkerProductionTill: 20
     OpeningBuildOrder:
       - 13 overlord
-      - 16 hatchery @ nat
-      - 18 extractor
-      - 17 spawningpool
-      - 19 overlord
-      - 20 queen
-      - 20 queen
+      - 13 spawningpool
+      - 17 queen
+      - 19 hatchery @ nat
+      - 20 extractor
+      - 21 queen
       - 22 zergling x4
       - 100 zerglingmovementspeed
 
@@ -56,15 +55,14 @@ Builds:
 
 
   TurtleEco:
-    ConstantWorkerProductionTill: 24
+    ConstantWorkerProductionTill: 22
     OpeningBuildOrder:
       - 13 overlord
-      - 16 hatchery @ nat
-      - 18 spawningpool
-      - 19 overlord
-      - 20 queen
-      - 20 queen
-      - 22 hatchery
-      - 24 extractor
-      - 26 overlord
-      - 28 roachwarren
+      - 13 spawningpool
+      - 17 queen
+      - 19 hatchery @ nat
+      - 20 extractor
+      - 21 queen
+      - 22 overlord
+      - 24 roachwarren
+      - 100 zerglingmovementspeed
