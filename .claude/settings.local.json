@@ -11,7 +11,9 @@
       "Bash(py -3 -c \"from ManifestorBot.manifests.resource_pressure import ResourcePressureManager; print\\('resource_pressure OK'\\)\" 2>&1 && py -3 -c \"from ManifestorBot.manifests.tactics.building_tactics import ZergHatcheryRebuildTactic, ZergArmyProductionTactic; print\\('building_tactics OK'\\)\" 2>&1)",
       "Bash(py:*)",
       "Bash(find:*)",
-      "Bash(cd C:\\\\Git\\\\Manifestor-SC2Bot:*)"
+      "Bash(cd C:\\\\Git\\\\Manifestor-SC2Bot:*)",
+      "Bash(awk NR>=3450 && NR<=3510:*)",
+      "Bash(git:*)"
     ]
   }
 }

@@ -215,7 +215,13 @@ class MiningTactic:
     blocked_strategies = frozenset()
 
     def is_applicable(self, unit: Unit, bot: "ManifestorBot") -> bool:
-        return unit.type_id in {UnitID.DRONE, UnitID.SCV, UnitID.PROBE}
+        if unit.type_id not in {UnitID.DRONE, UnitID.SCV, UnitID.PROBE}:
+            return False
+        # Don't redirect drones that are already claimed to build something
+        cq = getattr(bot, "construction_queue", None)
+        if cq is not None and cq.claimed_by_drone(unit.tag) is not None:
+            return False
+        return True
 
     def generate_idea(self, unit: Unit, bot, heuristics, current_strategy):
         from ManifestorBot.manifests.tactics.base import TacticIdea

@@ -428,9 +428,9 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         cohesion_bias = 0.0,
         hold_bias     = 0.0,
         sacrifice_ok  = False,
-        drone_bias    = 0.0,    # balanced — textbook macro
-        expand_bias   = 0.0,
-        gas_ratio_bias= 0.0,
+        drone_bias    = +0.10,  # drone priority: hit supply quickly
+        expand_bias   = +0.20,  # expand earlier (threshold ~70% vs default 75%)
+        gas_ratio_bias= -0.10,  # early comp is ling/queen (0 gas); don't over-collect
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={

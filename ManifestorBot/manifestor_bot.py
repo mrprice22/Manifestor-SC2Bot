@@ -40,6 +40,7 @@ from ManifestorBot.manifests.tactics.building_tactics import (
     ZergOverlordProductionTactic,
     ZergQueenProductionTactic,
     ZergGasWorkerTactic,
+    ZergGasWorkerPullTactic,
     ZergTechMorphTactic,
     ZergHatcheryRebuildTactic,
     ZergStaticDefenseTactic,
@@ -685,7 +686,8 @@ class ManifestorBot(AresBot):
             ZergHatcheryRebuildTactic(),   # Rebuild destroyed hatcheries (priority 90 > expand 80)
             ZergStaticDefenseTactic(),     # Spine/Spore crawlers under fortress (supply-exempt army)
             ZergStructureBuildTactic(),    # Build structures when needed
-            ZergGasWorkerTactic(),         # Ensure gas workers are always assigned
+            ZergGasWorkerTactic(),         # Assign workers to under-saturated extractors
+            ZergGasWorkerPullTactic(),     # Pull excess workers off gas when float is high
             CrawlerUprootBuildingTactic(), # Uproot orphaned crawlers after base loss
         ]
 

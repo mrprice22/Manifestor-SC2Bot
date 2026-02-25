@@ -86,6 +86,42 @@ _MAX_STRUCTURE_COUNT: dict[UnitID, int] = {
 }
 _DEFAULT_MAX_STRUCTURES: int = 1
 
+# Optional tech structures that should not be built until the queen quota is met.
+# Pool and extractor are always built regardless; everything else waits for queens.
+_QUEEN_GATED_STRUCTURES: frozenset = frozenset({
+    UnitID.ROACHWARREN,
+    UnitID.EVOLUTIONCHAMBER,
+    UnitID.HYDRALISKDEN,
+    UnitID.SPIRE,
+    UnitID.BANELINGNEST,
+    UnitID.INFESTATIONPIT,
+    UnitID.ULTRALISKCAVERN,
+})
+
+
+def _building_at_capacity(structure_type: UnitID, existing_ready, bot) -> bool:
+    """
+    Returns True if all existing *ready* buildings of this type are actively
+    utilized, justifying construction of an additional instance.
+
+    Passive tech-requirement buildings (roach warren, baneling nest, etc.) are
+    always considered "at capacity" — their value is unlocking unit production,
+    not parallel slot throughput.
+
+    Research buildings (evolution chamber) are only at capacity when every
+    existing instance has an active research order in its queue.  An idle evo
+    chamber has spare throughput — building a second one before the first is
+    busy is pure waste.
+    """
+    if not existing_ready:
+        return True  # nothing exists yet — utilization gate irrelevant
+
+    if structure_type == UnitID.EVOLUTIONCHAMBER:
+        return all(len(b.orders) > 0 for b in existing_ready)
+
+    # Default: passive buildings are always "at capacity" (no internal slots to fill)
+    return True
+
 
 def _max_for_structure(structure_type: UnitID, bot) -> int:
     """Return the max allowed count for a structure, with dynamic caps."""
@@ -398,6 +434,21 @@ class ZergArmyProductionTactic(BuildingTacticModule):
                 frame=bot.state.game_loop,
             )
         else:
+            # --- army_supply_target gate ---
+            # Each strategy's composition curve declares an army_supply_target.
+            # Once we reach it, defer to drone production (let drones win the
+            # confidence race) instead of continuously pumping army.
+            profile = current_strategy.profile()
+            comp = profile.active_composition(heuristics.game_phase)
+            if comp is not None and comp.army_supply_target > 0:
+                if combat_supply >= comp.army_supply_target:
+                    log.debug(
+                        "ZergArmyProductionTactic: army at target (%d/%d) — deferring to drones",
+                        combat_supply, comp.army_supply_target,
+                        frame=bot.state.game_loop,
+                    )
+                    return None  # larva should go to drones/overlords instead
+
             # --- Normal production scoring ---
 
             # Sub-signal: base confidence — always produce SOME army on neutral strategies
@@ -405,7 +456,6 @@ class ZergArmyProductionTactic(BuildingTacticModule):
             evidence["army_base"] = _ARMY_BASE_CONFIDENCE
 
             # Sub-signal: strategy aggression
-            profile = current_strategy.profile()
             agg_sig = profile.engage_bias * 0.4  # aggressive = more army
             confidence += agg_sig
             evidence["strategy_engage_bias"] = agg_sig
@@ -1176,7 +1226,27 @@ class ZergStructureBuildTactic(BuildingTacticModule):
                             train_type=structure_type,
                         )
 
+        # ── Queen gate: precompute queen deficit once ──────────────────
+        # Optional tech buildings (_QUEEN_GATED_STRUCTURES) are skipped until
+        # the queen quota is fully met, so minerals aren't wasted on tech when
+        # queens are still needed for defense/injects.
+        _hatch_count = bot.structures.filter(
+            lambda s: s.type_id in {UnitID.HATCHERY, UnitID.LAIR, UnitID.HIVE} and s.is_ready
+        ).amount
+        _queen_quota = max(_MIN_QUEENS, int(_hatch_count * _MAX_QUEENS_PER_HATCHERY))
+        _effective_queens = bot.units(UnitID.QUEEN).amount + bot.already_pending(UnitID.QUEEN)
+        _queens_deficient = _effective_queens < _queen_quota
+
         for structure_type, prerequisite, min_minerals in _STRUCTURE_PRIORITY:
+            # ── Queen gate: skip optional tech while queens are short ──
+            if _queens_deficient and structure_type in _QUEEN_GATED_STRUCTURES:
+                log.debug(
+                    "ZergStructureBuildTactic: %s gated — queens=%d < quota=%d",
+                    structure_type.name, _effective_queens, _queen_quota,
+                    frame=bot.state.game_loop,
+                )
+                continue
+
             # ── Hard cap on structure count ────────────────────────────
             max_allowed = _max_for_structure(structure_type, bot)
             existing_count = bot.structures(structure_type).amount
@@ -1195,6 +1265,19 @@ class ZergStructureBuildTactic(BuildingTacticModule):
                     frame=bot.state.game_loop,
                 )
                 continue
+
+            # ── Utilization gate: only add more if existing are at capacity ──
+            # Prevents duplicate research buildings (e.g. 2nd evo chamber) from
+            # being built while the first one still has idle research slots.
+            if existing_count >= 1:
+                existing_ready = bot.structures(structure_type).ready
+                if not _building_at_capacity(structure_type, existing_ready, bot):
+                    log.debug(
+                        "ZergStructureBuildTactic: %s — existing not at capacity, deferring",
+                        structure_type.name,
+                        frame=bot.state.game_loop,
+                    )
+                    continue
 
             # Prerequisite check — with special handling for EXTRACTOR:
             # We queue the extractor as soon as the pool is *pending* (not just ready),
@@ -1478,7 +1561,8 @@ class ZergStructureBuildTactic(BuildingTacticModule):
 _MAX_QUEENS_PER_HATCHERY: float = 1.0
 
 # Minimum queens we always want regardless of hatchery count.
-_MIN_QUEENS: int = 1
+# Two queens: one for injects, one for defense/creep.
+_MIN_QUEENS: int = 2
 
 # ─── FIX: Confidence must be set above the worker drone ceiling ──────────────
 #
@@ -1695,14 +1779,14 @@ class ZergQueenProductionTactic(BuildingTacticModule):
 # (avoid supply blocks at scale).
 def _effective_overlord_threshold(bot: "ManifestorBot") -> int:
     if bot.supply_cap < 30:
-        return 3   # early game: tight supply management, more larva for drones
+        return 5   # early game: slightly more headroom so we don't stall larva
     elif bot.supply_cap < 60:
-        return 7   # mid game: moderate headroom
+        return 8   # mid game: moderate headroom
     else:
-        return 12  # late game: aggressive overlord production to avoid blocks
+        return 14  # late game: aggressive overlord production to reach 200 faster
 
-# Maximum overlords pending at once — allow 2 concurrent to break 80→200 supply faster.
-_MAX_PENDING_OVERLORDS: int = 1  # was 1
+# Maximum overlords pending at once — 2 concurrent helps break supply blocks when scaling fast.
+_MAX_PENDING_OVERLORDS: int = 2
 
 
 class ZergOverlordProductionTactic(BuildingTacticModule):
@@ -1981,6 +2065,26 @@ class ZergTechMorphTactic(BuildingTacticModule):
 # 8. Gas Worker Assignment
 # ---------------------------------------------------------------------------
 
+# Target gas workers per extractor, tiered by current vespene float.
+# Strategies with gas_ratio_bias > 0 always fill to ideal (no cap).
+# These tiers prevent gas accumulation when the current composition
+# spends little gas (early ling/queen/baneling = ~25g per baneling).
+_GAS_FLOAT_CAP: int = 200   # stop assigning new workers above this
+_GAS_TIER_SLOW: int = 100   # reduce to 1 worker/extractor above this
+_GAS_TIER_STOP: int = 300   # pull all workers off above this
+
+
+def _gas_target_workers(vespene: int, ideal: int, bias: float) -> int:
+    """Target gas workers per extractor given current float and strategy bias."""
+    if bias > 0.0:
+        return ideal        # gas-hungry strategy — always fill
+    if vespene >= _GAS_TIER_STOP:
+        return 0            # stop collecting entirely
+    if vespene >= _GAS_TIER_SLOW:
+        return 1            # trickle — 1 worker keeps gas income for upgrades
+    return ideal            # below slow tier — collect normally
+
+
 class ZergGasWorkerTactic(BuildingTacticModule):
     """
     Explicitly assign idle or mineral-mining drones to gas buildings that are
@@ -1997,12 +2101,51 @@ class ZergGasWorkerTactic(BuildingTacticModule):
 
     Uses the EXTRACTOR / ASSIMILATOR / REFINERY as the anchor building.
     Confidence is high (0.90) — getting gas is critical for any tech units.
+
+    Over-saturation fix
+    -------------------
+    SC2's assigned_harvesters count lags behind issued gather commands by several
+    game frames. Without tracking pending commands, is_applicable() fires multiple
+    times before the count updates and we end up sending 10-20 drones to one geyser.
+
+    Solution: per-extractor pending-assignment tracking.
+      _pending[tag]   = # drones we've ordered to this extractor but haven't
+                        been confirmed by the game state yet.
+      _last_seen[tag] = assigned_harvesters value at the time we last checked.
+    When assigned_harvesters rises, we know the game registered some of our
+    orders; we subtract that from pending.
     """
 
     BUILDING_TYPES = frozenset({
         UnitID.EXTRACTOR,
         UnitID.EXTRACTORRICH,
     })
+
+    def __init__(self) -> None:
+        super().__init__()
+        # extractor tag → pending drone orders not yet reflected in assigned_harvesters
+        self._pending: dict[int, int] = {}
+        # extractor tag → assigned_harvesters value last time we checked
+        self._last_seen: dict[int, int] = {}
+
+    def _effective_deficit(self, building: "Unit") -> int:
+        """
+        Return how many more drones this extractor actually needs, accounting for
+        pending orders we've already issued but the game hasn't registered yet.
+        """
+        tag = building.tag
+        actual = building.assigned_harvesters
+        last = self._last_seen.get(tag, 0)
+
+        # If actual went up since last check, the game registered some of our orders.
+        # Reduce pending by however many were registered.
+        if actual > last:
+            registered = actual - last
+            self._pending[tag] = max(0, self._pending.get(tag, 0) - registered)
+        self._last_seen[tag] = actual
+
+        effective = actual + self._pending.get(tag, 0)
+        return max(0, building.ideal_harvesters - effective)
 
     def is_applicable(self, building: "Unit", bot: "ManifestorBot") -> bool:
         if building.type_id not in self.BUILDING_TYPES:
@@ -2015,12 +2158,14 @@ class ZergGasWorkerTactic(BuildingTacticModule):
                 frame=bot.state.game_loop,
             )
             return False
-        # Only act if under-saturated
-        if building.assigned_harvesters >= building.ideal_harvesters:
+        # Use effective deficit (actual + pending) to avoid over-assigning
+        if self._effective_deficit(building) <= 0:
             log.debug(
-                "ZergGasWorkerTactic: extractor tag=%d saturated (%d/%d) — skipping",
+                "ZergGasWorkerTactic: extractor tag=%d effectively saturated "
+                "(%d actual + %d pending >= %d ideal) — skipping",
                 building.tag,
                 building.assigned_harvesters,
+                self._pending.get(building.tag, 0),
                 building.ideal_harvesters,
                 frame=bot.state.game_loop,
             )
@@ -2035,21 +2180,37 @@ class ZergGasWorkerTactic(BuildingTacticModule):
         current_strategy: "Strategy",
         counter_ctx: "CounterContext",
     ) -> Optional[BuildingIdea]:
-        deficit = building.ideal_harvesters - building.assigned_harvesters
+        deficit = self._effective_deficit(building)
         log.info(
-            "ZergGasWorkerTactic: extractor tag=%d needs %d more workers (%d/%d)",
+            "ZergGasWorkerTactic: extractor tag=%d needs %d more workers "
+            "(%d actual + %d pending / %d ideal)",
             building.tag,
             deficit,
             building.assigned_harvesters,
+            self._pending.get(building.tag, 0),
             building.ideal_harvesters,
             frame=bot.state.game_loop,
         )
 
         profile = current_strategy.profile()
+
+        # Tiered gas float control: stop assigning new workers when gas float
+        # exceeds the cap threshold.  ZergGasWorkerPullTactic handles the active
+        # removal of workers when the float rises above _GAS_TIER_STOP.
+        target = _gas_target_workers(bot.vespene, building.ideal_harvesters, profile.gas_ratio_bias)
+        if bot.vespene >= _GAS_FLOAT_CAP:
+            log.debug(
+                "ZergGasWorkerTactic: gas=%d >= float_cap=%d (target=%d) — skipping new assignment",
+                bot.vespene, _GAS_FLOAT_CAP, target,
+                frame=bot.state.game_loop,
+            )
+            return None
+
         confidence = max(0.40, 0.90 + profile.gas_ratio_bias)
         evidence = {
             "gas_deficit": deficit,
             "assigned": building.assigned_harvesters,
+            "pending": self._pending.get(building.tag, 0),
             "ideal": building.ideal_harvesters,
             "gas_ratio_bias": profile.gas_ratio_bias,
         }
@@ -2063,15 +2224,17 @@ class ZergGasWorkerTactic(BuildingTacticModule):
 
     def execute(self, building: "Unit", idea: BuildingIdea, bot: "ManifestorBot") -> bool:
         """
-        Find a nearby mineral-mining drone and redirect it to this gas building.
+        Find nearby mineral-mining drones and redirect them to this gas building.
+        Tracks redirected tags within the call so the same drone isn't picked twice.
+        Updates _pending so is_applicable() won't over-assign on subsequent frames.
         """
-        deficit = building.ideal_harvesters - building.assigned_harvesters
+        deficit = self._effective_deficit(building)
         if deficit <= 0:
             return False
 
-        redirected = 0
+        redirected_tags: set[int] = set()
         for _ in range(deficit):
-            drone = self._find_mineral_drone(building, bot)
+            drone = self._find_mineral_drone(building, bot, exclude=redirected_tags)
             if drone is None:
                 log.warning(
                     "ZergGasWorkerTactic: no available mineral drone to redirect to extractor tag=%d",
@@ -2080,38 +2243,58 @@ class ZergGasWorkerTactic(BuildingTacticModule):
                 )
                 break
             drone.gather(building)
+            redirected_tags.add(drone.tag)
             log.info(
                 "ZergGasWorkerTactic: redirected drone tag=%d → extractor tag=%d",
                 drone.tag,
                 building.tag,
                 frame=bot.state.game_loop,
             )
-            redirected += 1
 
-        return redirected > 0
+        count = len(redirected_tags)
+        if count > 0:
+            self._pending[building.tag] = self._pending.get(building.tag, 0) + count
+        return count > 0
 
-    def _find_mineral_drone(self, gas_building: "Unit", bot: "ManifestorBot"):
+    def _find_mineral_drone(
+        self,
+        gas_building: "Unit",
+        bot: "ManifestorBot",
+        exclude: "set[int] | None" = None,
+    ):
         """
-        Find the closest drone that is currently mining minerals (not gas, not building).
+        Find the closest drone that is actively mining MINERALS (not gas, not building).
+
+        Filters on the gather-target being a mineral field unit, not a geyser or
+        extractor — fixes the original bug where HARVEST_GATHER was used for both
+        mineral and gas gathering and drones already heading to gas were picked.
         """
         from sc2.ids.ability_id import AbilityId
-        MINERAL_GATHER = {
+        GATHER_ABILITIES = {
             AbilityId.HARVEST_GATHER,
             AbilityId.HARVEST_GATHER_DRONE,
         }
+        if exclude is None:
+            exclude = set()
+
+        # Build a fast-lookup set of mineral field tags
+        mineral_tags: set[int] = {m.tag for m in bot.mineral_field}
+
         candidates = []
         for drone in bot.workers:
+            if drone.tag in exclude:
+                continue
             if not drone.orders:
                 continue
             order = drone.orders[0]
-            if order.ability.id not in MINERAL_GATHER:
+            if order.ability.id not in GATHER_ABILITIES:
                 continue
-            # Make sure it's gathering a mineral (not a gas building)
-            # The target is a mineral field or a gas geyser — check unit type
+            # Filter: target must be a mineral field, not a gas geyser or extractor
             target_tag = getattr(order, 'target', None)
-            if target_tag is None:
+            if not isinstance(target_tag, int):
                 continue
-            # Accept any mineral-gathering drone near this extractor's base
+            if target_tag not in mineral_tags:
+                continue
             candidates.append(drone)
 
         if not candidates:
@@ -2119,6 +2302,141 @@ class ZergGasWorkerTactic(BuildingTacticModule):
 
         # Pick the closest one to the gas building to minimize travel time
         return min(candidates, key=lambda d: d.distance_to(gas_building.position))
+
+
+# ---------------------------------------------------------------------------
+# 8b. Gas Worker Pull-Off
+# ---------------------------------------------------------------------------
+
+class ZergGasWorkerPullTactic(BuildingTacticModule):
+    """
+    Actively remove gas workers from extractors when the gas float exceeds
+    the tiered target defined by _gas_target_workers().
+
+    ZergGasWorkerTactic only ASSIGNS workers (filling deficits).  Once an
+    extractor is saturated, those workers keep collecting indefinitely —
+    even when gas reserves pile up to 1000+.  This tactic is the complement:
+    it detects when assigned_harvesters > target and redirects the excess
+    worker(s) back to the nearest mineral patch.
+
+    Fires on the same EXTRACTOR / EXTRACTORRICH building types, after
+    ZergGasWorkerTactic in the building module list (so assign fires first
+    when gas is low and pull fires when gas is high).
+    """
+
+    name = "ZergGasWorkerPullTactic"
+
+    BUILDING_TYPES = frozenset({
+        UnitID.EXTRACTOR,
+        UnitID.EXTRACTORRICH,
+    })
+
+    # SC2 ability IDs that indicate a drone is actively harvesting gas
+    _GAS_HARVEST_ABILITIES: frozenset = frozenset()
+
+    def __init__(self) -> None:
+        super().__init__()
+        from sc2.ids.ability_id import AbilityId
+        self._GAS_HARVEST_ABILITIES = frozenset({
+            AbilityId.HARVEST_GATHER,
+            AbilityId.HARVEST_GATHER_DRONE,
+            AbilityId.SMART,
+        })
+
+    def is_applicable(self, building: "Unit", bot: "ManifestorBot") -> bool:
+        if building.type_id not in self.BUILDING_TYPES:
+            return False
+        if not self._building_is_ready(building):
+            return False
+        return building.assigned_harvesters > 0
+
+    def generate_idea(
+        self,
+        building: "Unit",
+        bot: "ManifestorBot",
+        heuristics: "HeuristicState",
+        current_strategy: "Strategy",
+        counter_ctx,
+    ) -> Optional[BuildingIdea]:
+        profile = current_strategy.profile()
+        target = _gas_target_workers(
+            bot.vespene, building.ideal_harvesters, profile.gas_ratio_bias
+        )
+
+        if building.assigned_harvesters <= target:
+            return None  # already at or under target — nothing to pull
+
+        excess = building.assigned_harvesters - target
+        log.debug(
+            "ZergGasWorkerPullTactic: extractor tag=%d assigned=%d target=%d excess=%d gas=%d",
+            building.tag,
+            building.assigned_harvesters,
+            target,
+            excess,
+            bot.vespene,
+            frame=bot.state.game_loop,
+        )
+
+        return BuildingIdea(
+            building_module=self,
+            action=BuildingAction.TRAIN,   # repurposed — execute() handles redirect
+            confidence=0.88,
+            evidence={
+                "pull": True,
+                "assigned": building.assigned_harvesters,
+                "target": target,
+                "excess": excess,
+                "vespene": bot.vespene,
+            },
+            train_type=None,
+        )
+
+    def execute(self, building: "Unit", idea: BuildingIdea, bot: "ManifestorBot") -> bool:
+        """
+        Find one drone harvesting from this extractor and send it to mine minerals.
+        Pulls only 1 worker per firing so the system can re-evaluate next cycle.
+        """
+        gas_drone = self._find_gas_worker(building, bot)
+        if gas_drone is None:
+            return False
+
+        # Find the nearest mineral patch to send the drone back to
+        nearest_th = bot.townhalls.ready.closest_to(building.position) if bot.townhalls.ready else None
+        if nearest_th:
+            minerals = bot.mineral_field.closer_than(12, nearest_th.position)
+        else:
+            minerals = bot.mineral_field
+
+        if not minerals:
+            return False
+
+        target_patch = minerals.closest_to(gas_drone.position)
+        gas_drone.gather(target_patch)
+
+        log.info(
+            "ZergGasWorkerPullTactic: pulled drone tag=%d off extractor tag=%d → minerals (gas=%d target=%d)",
+            gas_drone.tag,
+            building.tag,
+            bot.vespene,
+            idea.evidence.get("target", "?"),
+            frame=bot.state.game_loop,
+        )
+        return True
+
+    def _find_gas_worker(self, building: "Unit", bot: "ManifestorBot") -> Optional["Unit"]:
+        """
+        Find one drone that is currently harvesting from this specific extractor.
+        Checks order.target against the extractor tag; also accepts drones
+        in transit to the extractor (SMART ability with matching target).
+        """
+        for drone in bot.workers:
+            for order in drone.orders:
+                if order.ability.id not in self._GAS_HARVEST_ABILITIES:
+                    continue
+                target = getattr(order, "target", None)
+                if target == building.tag:
+                    return drone
+        return None
 
 
 # ---------------------------------------------------------------------------
