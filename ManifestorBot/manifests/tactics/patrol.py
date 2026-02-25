@@ -114,7 +114,7 @@ class OpportunisticPatrolTactic(TacticModule):
         if confidence < 0.40:
             return None
 
-        target = self._pick_patrol_point(unit, bot)
+        target = self._pick_patrol_point(unit, bot, heuristics)
         if target is None:
             return None
 
@@ -129,7 +129,7 @@ class OpportunisticPatrolTactic(TacticModule):
     # Patrol-point selection
     # ------------------------------------------------------------------ #
     def _pick_patrol_point(
-        self, unit: Unit, bot: "ManifestorBot"
+        self, unit: Unit, bot: "ManifestorBot", heuristics: "HeuristicState"
     ) -> Optional[Point2]:
         army = bot.units.exclude_type({bot.worker_type, bot.supply_type})
         centroid = army.center if army else bot.start_location
@@ -137,6 +137,16 @@ class OpportunisticPatrolTactic(TacticModule):
         map_center = bot.game_info.map_center
 
         best: Optional[Point2] = None
+
+        # 0. Territory edge patrol — when army is too small to venture forward,
+        #    keep units on the boundary of what we can actually defend.
+        #    This prevents weak forces from dying in the mid-map while the
+        #    main base is undefended.
+        dt = getattr(bot, "defendable_territory", None)
+        if dt is not None and dt.should_patrol_territory_edge(bot):
+            edge = dt.patrol_edge_point(bot, unit.position)
+            if edge is not None:
+                return edge
 
         # 1. Pheromone-guided: low threat + low ally trail, biased forward
         pm = getattr(bot, "pheromone_map", None)

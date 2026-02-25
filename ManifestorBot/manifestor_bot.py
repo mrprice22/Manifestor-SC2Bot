@@ -73,6 +73,7 @@ from ManifestorBot.manifests.territory_border_map import (
     BorderConfig,
 )
 from ManifestorBot.manifests.strategy_machine import StrategyMachine
+from ManifestorBot.manifests.defendable_territory import DefendableTerritory
 
 
 
@@ -115,6 +116,9 @@ class ManifestorBot(AresBot):
 
         # Overlord early-warning system
         self.territory_border_map: Optional[TerritoryBorderMap] = None
+
+        # Defensive territory perimeter (expansion + patrol gating)
+        self.defendable_territory: DefendableTerritory = DefendableTerritory()
 
         # Construction system
         self.construction_queue: ConstructionQueue = ConstructionQueue()
@@ -238,7 +242,10 @@ class ManifestorBot(AresBot):
 
         # STAGE 2: Strategy selection
         self.strategy_machine.update(self, self.heuristic_manager.get_state())
-        
+
+        # STAGE 2b: Defensive territory perimeter (expansion + patrol gating)
+        self.defendable_territory.update(self, self.heuristic_manager.get_state())
+
         # STAGE 7: Unit idea generation with suppression
         await self._generate_unit_ideas()
         await self._generate_building_ideas()

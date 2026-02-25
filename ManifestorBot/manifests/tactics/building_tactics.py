@@ -1363,6 +1363,24 @@ class ZergStructureBuildTactic(BuildingTacticModule):
             )
             return None
 
+        # ── Defensive territory gate ─────────────────────────────────────────
+        # Don't expand unless the bot's army can actually defend the new base.
+        # Under-strength expansion is the #1 cause of early-game base loss on
+        # harder difficulties.
+        defend_territory = getattr(bot, "defendable_territory", None)
+        if defend_territory is not None:
+            target_base_count = bot.townhalls.amount + 1
+            safe, reason = defend_territory.is_safe_to_expand(
+                bot, heuristics, target_base_count
+            )
+            if not safe:
+                log.debug(
+                    "ZergStructureBuildTactic: expansion blocked by defend gate — %s",
+                    reason,
+                    frame=bot.state.game_loop,
+                )
+                return None
+
         # Saturation trigger: use surplus_harvesters (accounts for gas workers)
         # so gas workers don't inflate the "assigned" count against a
         # mineral-only ideal.  Expand when bases are ≥75% saturated on average,
