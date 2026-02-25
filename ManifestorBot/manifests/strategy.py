@@ -71,13 +71,27 @@ class TacticalProfile:
                         When True, retreat confidence is further reduced
                         and engage confidence gets a small bonus for
                         units at low health.
+
+        Economy biases (additive to confidence in building tactics):
+        drone_bias:     Bias toward droning.  +0.30 = fortress drones hard;
+                        -0.50 = all-in stops droning entirely.
+        expand_bias:    Bias toward expansion.  Lowers the saturation
+                        threshold needed to take a new base and lifts
+                        expansion confidence.  +0.25 = fortress expands
+                        early; -0.30 = all-in never expands.
+        gas_ratio_bias: Bias toward filling gas buildings.  +0.20 = muta/
+                        hydra strategies saturate gas ASAP; -0.20 = ling-
+                        flood/all-in routes most workers to minerals.
     """
-    engage_bias:   float = 0.0
-    retreat_bias:  float = 0.0
-    harass_bias:   float = 0.0
-    cohesion_bias: float = 0.0
-    hold_bias:     float = 0.0
-    sacrifice_ok:  bool  = False
+    engage_bias:    float = 0.0
+    retreat_bias:   float = 0.0
+    harass_bias:    float = 0.0
+    cohesion_bias:  float = 0.0
+    hold_bias:      float = 0.0
+    sacrifice_ok:   bool  = False
+    drone_bias:     float = 0.0
+    expand_bias:    float = 0.0
+    gas_ratio_bias: float = 0.0
     opening:       str   = "StandardOpener"  #maps to build name in zerg_builds.yml
     # Ordered list of (min_phase_threshold, CompositionTarget)
     # The last entry whose threshold <= current game_phase is active.
@@ -178,6 +192,9 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         cohesion_bias = +0.10,
         hold_bias     = -0.20,
         sacrifice_ok  = True,
+        drone_bias    = -0.20,   # prioritise army over workers
+        expand_bias   = -0.10,   # hold expansions; army is the priority
+        gas_ratio_bias=  0.00,   # neutral — roach/ling needs some gas
         opening      = "EarlyAggression",
         composition_curve = [
             (0.00, CompositionTarget(
@@ -235,6 +252,9 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         cohesion_bias = -0.10,
         hold_bias     = -0.30,
         sacrifice_ok  = True,
+        drone_bias    = -0.50,   # stop droning — every larva is army
+        expand_bias   = -0.30,   # never expand; commit everything now
+        gas_ratio_bias= -0.20,   # mineral-heavy; ling-bane-roach all-in
         opening      = "EarlyAggression",
         composition_curve = [
             (0.00, CompositionTarget(
@@ -284,6 +304,9 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         cohesion_bias = -0.15,
         hold_bias     = -0.10,
         sacrifice_ok  = False,
+        drone_bias    =  0.00,   # keep pace with army; neither over-drones nor starves
+        expand_bias   = +0.10,   # more bases fuel continuous harassment
+        gas_ratio_bias= +0.20,   # mutas/hydras are gas-hungry; fill extractors fast
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
@@ -343,6 +366,9 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         cohesion_bias = -0.30,
         hold_bias     = -0.15,
         sacrifice_ok  = False,
+        drone_bias    = +0.10,   # rich economy fuels multi-front chaos
+        expand_bias   = +0.15,   # more bases = more production capacity for chaos
+        gas_ratio_bias= +0.10,   # mutas + banes + lurkers all need gas
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
@@ -402,6 +428,9 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         cohesion_bias = 0.0,
         hold_bias     = 0.0,
         sacrifice_ok  = False,
+        drone_bias    = 0.0,    # balanced — textbook macro
+        expand_bias   = 0.0,
+        gas_ratio_bias= 0.0,
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
@@ -462,6 +491,9 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         cohesion_bias = +0.20,
         hold_bias     = +0.15,
         sacrifice_ok  = False,
+        drone_bias    = +0.10,   # steady droning; rich economy sustains the grind
+        expand_bias   = +0.05,   # modest push; expand when safe, not eagerly
+        gas_ratio_bias=  0.00,   # lurkers/infestors need gas but so do ravagers; neutral
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
@@ -522,6 +554,9 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         cohesion_bias = +0.10,
         hold_bias     = +0.10,
         sacrifice_ok  = False,
+        drone_bias    = -0.05,   # slight drone de-emphasis; units keep the pressure on
+        expand_bias   = +0.10,   # more bases fuel sustained harassment
+        gas_ratio_bias= +0.20,   # mutas/broodlords/vipers are all gas-hungry
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
@@ -582,6 +617,9 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         cohesion_bias = +0.35,
         hold_bias     = +0.40,
         sacrifice_ok  = False,
+        drone_bias    = +0.30,   # drone as hard as possible; economy IS the strategy
+        expand_bias   = +0.25,   # expand early and often; more bases = more drones
+        gas_ratio_bias=  0.00,   # neutral; needs gas for hydras/lurkers eventually
         opening     = "TurtleEco",
         composition_curve = [
             (0.00, CompositionTarget(

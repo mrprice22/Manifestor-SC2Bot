@@ -186,18 +186,18 @@ class ZergWorkerProductionTactic(BuildingTacticModule):
             confidence += econ_sig
             evidence["economic_health_lag"] = econ_sig
 
-        # Sub-signal: strategy profile — aggressive strategies deprioritise drones
+        # Sub-signal: strategy drone bias — explicit per-strategy drone priority
         profile = current_strategy.profile()
-        strategy_drag = profile.engage_bias * -0.15  # positive engage_bias → less drone pressure
-        confidence += strategy_drag
-        evidence["strategy_engage_drag"] = strategy_drag
+        if profile.drone_bias != 0.0:
+            confidence += profile.drone_bias
+            evidence["drone_bias"] = profile.drone_bias
 
         log.debug(
-            "ZergWorkerProductionTactic: confidence=%.3f (sat=%.3f econ_lag=%.3f drag=%.3f delta=%.1f)",
+            "ZergWorkerProductionTactic: confidence=%.3f (sat=%.3f econ_lag=%.3f drone_bias=%.3f delta=%.1f)",
             confidence,
             sat_sig,
             evidence.get("economic_health_lag", 0.0),
-            strategy_drag,
+            evidence.get("drone_bias", 0.0),
             delta,
             frame=bot.state.game_loop,
         )
@@ -1370,10 +1370,16 @@ class ZergStructureBuildTactic(BuildingTacticModule):
         avg_saturation = (total_ideal + total_surplus) / max(total_ideal, 1)
         banking_hard = bot.minerals > 600
 
-        if avg_saturation < 0.75 and not banking_hard:
+        # Strategy expand_bias lowers the saturation threshold (positive = expand earlier).
+        # expand_bias = +0.25  → threshold 0.675 (expand at 67.5% saturation)
+        # expand_bias = -0.30  → threshold 0.840 (need 84% saturation)
+        profile = current_strategy.profile()
+        sat_threshold = max(0.50, 0.75 - profile.expand_bias * 0.30)
+
+        if avg_saturation < sat_threshold and not banking_hard:
             log.debug(
-                "ZergStructureBuildTactic: expansion skipped — saturation %.0f%% < 75%%",
-                avg_saturation * 100,
+                "ZergStructureBuildTactic: expansion skipped — sat %.0f%% < threshold %.0f%% (expand_bias=%.2f)",
+                avg_saturation * 100, sat_threshold * 100, profile.expand_bias,
                 frame=bot.state.game_loop,
             )
             return None
@@ -1388,12 +1394,13 @@ class ZergStructureBuildTactic(BuildingTacticModule):
         if free_expansion is None:
             return None
 
-        confidence = 0.75
+        confidence = max(0.50, min(0.90, 0.75 + profile.expand_bias * 0.10))
         evidence = {
             "expansion": True,
             "current_bases": current_bases,
             "max_hatcheries": max_hatch,
             "avg_saturation": round(avg_saturation, 2),
+            "expand_bias": profile.expand_bias,
         }
 
         log.info(
@@ -2000,11 +2007,13 @@ class ZergGasWorkerTactic(BuildingTacticModule):
             frame=bot.state.game_loop,
         )
 
-        confidence = 0.90
+        profile = current_strategy.profile()
+        confidence = max(0.40, 0.90 + profile.gas_ratio_bias)
         evidence = {
             "gas_deficit": deficit,
             "assigned": building.assigned_harvesters,
             "ideal": building.ideal_harvesters,
+            "gas_ratio_bias": profile.gas_ratio_bias,
         }
         return BuildingIdea(
             building_module=self,
