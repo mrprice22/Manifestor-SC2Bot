@@ -71,6 +71,7 @@ from ManifestorBot.manifests.territory_border_map import (
     TerritoryBorderMap,
     BorderConfig,
 )
+from ManifestorBot.manifests.strategy_machine import StrategyMachine
 
 
 
@@ -99,6 +100,9 @@ class ManifestorBot(AresBot):
         self.current_strategy: Strategy = Strategy.STOCK_STANDARD
         self.strategy_started_frame: int = 0
         
+        # Strategy state machine
+        self.strategy_machine: StrategyMachine = StrategyMachine()
+
         # Managers (created in on_start)
         self.heuristic_manager: Optional[HeuristicManager] = None
         
@@ -128,6 +132,10 @@ class ManifestorBot(AresBot):
         
         # Suppressed ideas tracker (prevents spam)
         self.suppressed_ideas: Dict[int, int] = {}  # unit_tag -> frame_last_suppressed
+
+        # Pending chat messages queued by synchronous code (e.g. change_strategy).
+        # Drained in on_step where await is safe.
+        self._pending_chat: List[str] = []
 
         # Positions of destroyed townhalls pending rebuild
         self._lost_hatchery_positions: list = []
@@ -197,7 +205,11 @@ class ManifestorBot(AresBot):
     async def on_step(self, iteration: int) -> None:
         """Main game loop - this is where the magic happens"""
         await super().on_step(iteration)
-        
+
+        # Drain any chat messages queued by synchronous code (e.g. change_strategy)
+        while self._pending_chat:
+            await self._chat(self._pending_chat.pop(0))
+
         self.morph_tracker.update(self)
         self.scout_ledger.update(iteration)
         self.pheromone_map.update(iteration)
@@ -222,9 +234,9 @@ class ManifestorBot(AresBot):
         # Log heuristics periodically (every ~5 seconds) to avoid log spam
         if iteration % 112 == 0:
             log.heuristics(self.heuristic_manager.get_state(), frame=self.state.game_loop)
-        
-        # STAGE 2-6: (TODO - tactic detection, strategy labeling, Dream, weights)
-        # For now we'll just use raw heuristics
+
+        # STAGE 2: Strategy selection
+        self.strategy_machine.update(self, self.heuristic_manager.get_state())
         
         # STAGE 7: Unit idea generation with suppression
         await self._generate_unit_ideas()
@@ -410,8 +422,9 @@ class ManifestorBot(AresBot):
             f"Mom:{h.momentum:.1f}",
             f"ArmyVal:{h.army_value_ratio:.2f}",
             f"Agg:{h.aggression_dial:.0f}",
+            f"SM:{self.strategy_machine.candidate_summary()}",
         ]
-        
+
         await self._chat(" | ".join(status_parts))
 
     def _generate_ideas_for_unit(self, unit: Unit) -> List[TacticIdea]:
@@ -492,8 +505,7 @@ class ManifestorBot(AresBot):
             msg = f"PIVOT: {old_strategy.value} → {new_strategy.value}"
             if reason:
                 msg += f" ({reason})"
-            import asyncio
-            asyncio.create_task(self._chat(msg))
+            self._pending_chat.append(msg)
             
     def _load_tactic_modules(self) -> None:
         """
