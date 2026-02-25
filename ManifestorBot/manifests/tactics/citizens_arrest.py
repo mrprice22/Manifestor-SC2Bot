@@ -97,8 +97,7 @@ class CitizensArrestTactic(TacticModule):
 
     def is_applicable(self, unit: Unit, bot: 'ManifestorBot') -> bool:
         """Only workers can join a Citizen's Arrest posse."""
-        # Must be a worker (not an army unit, not supply)
-        if not unit.is_worker:
+        if unit.type_id != bot.worker_type:
             return False
         # Workers currently building cannot abandon the construction
         if unit.is_constructing_scv:
@@ -216,7 +215,7 @@ def _find_intruder(bot: 'ManifestorBot') -> Optional[Unit]:
     for th in bot.townhalls.ready:
         nearby = bot.enemy_units.closer_than(_BASE_THREAT_RADIUS, th.position)
         for enemy in nearby:
-            if enemy.is_structure or enemy.is_worker:
+            if enemy.is_structure or enemy.type_id in {UnitID.DRONE, UnitID.SCV, UnitID.PROBE}:
                 continue
             # Burrowed units we can't see are memory units — ignore them
             if enemy.is_memory:

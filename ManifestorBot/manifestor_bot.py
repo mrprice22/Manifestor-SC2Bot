@@ -577,10 +577,14 @@ class ManifestorBot(AresBot):
         from ManifestorBot.manifests.tactics.commit_attack import CommitAttackTactic
         from ManifestorBot.manifests.tactics.crawler_tactics import CrawlerMoveTactic
         from ManifestorBot.manifests.tactics.extractor_shield import ExtractorShieldTactic
+        from ManifestorBot.manifests.tactics.pull_the_boys import PullTheBoysTactic
+        from ManifestorBot.manifests.tactics.citizens_arrest import CitizensArrestTactic
 
         self.tactic_modules = [
             BuildingTactic(),
             ExtractorShieldTactic(),  # Emergency drone survival — before MiningTactic
+            PullTheBoysTactic(),      # Last-resort: all drones vs mass attack
+            CitizensArrestTactic(),   # Light defense: worker mob vs lone intruder
             MiningTactic(),
             BaseDefenseTactic(),
             CommitAttackTactic(),

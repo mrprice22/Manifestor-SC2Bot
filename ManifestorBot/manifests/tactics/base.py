@@ -265,8 +265,9 @@ class TacticModule(ABC):
         # too because attacking them wastes time in most scenarios.
         candidates = [
             e for e in bot.enemy_units
-            if not e.is_structure and not e.is_worker
-            and e.type_id not in {_UnitID.OVERLORD, _UnitID.OVERSEER}
+            if not e.is_structure
+            and e.type_id not in {_UnitID.OVERLORD, _UnitID.OVERSEER,
+                                   _UnitID.DRONE, _UnitID.SCV, _UnitID.PROBE}
         ]
         if not candidates:
             return None
