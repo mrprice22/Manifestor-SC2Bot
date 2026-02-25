@@ -383,16 +383,46 @@ class MorphTracker:
                 if frame - start_frame < _BUILDING_GRACE_FRAMES:
                     continue
 
-                # Check if an in-progress structure still exists near build location
+                nearby = list(bot.structures(structure_type))
+
+                # Still morphing — all good
                 still_in_progress = any(
                     s.build_progress < 1.0
                     and s.position.distance_to(order.base_location) < _COMPLETION_RADIUS
-                    for s in bot.structures(structure_type)
+                    for s in nearby
                 )
                 if still_in_progress:
-                    continue  # Still building — all good
+                    continue
 
-                # The building is gone and not yet marked DONE — must have been cancelled
+                # Check if the structure already completed (build_progress == 1.0) but
+                # was never marked DONE (e.g. tag was added to _completed_structure_tags
+                # as "pre-existing" before the order reached BUILDING state).
+                already_complete = next(
+                    (
+                        s for s in nearby
+                        if s.build_progress >= 1.0
+                        and s.position.distance_to(order.base_location) < _COMPLETION_RADIUS
+                        and s.tag not in self._completed_structure_tags
+                    ),
+                    None,
+                )
+                if already_complete is not None:
+                    queue.mark_done(order)
+                    self._completed_structure_tags.add(already_complete.tag)
+                    self._building_start_frames.pop(order._order_id, None)
+                    if order in orders:
+                        orders.remove(order)
+                    log.debug(
+                        "MorphTracker: %s BUILDING order completed without DONE event "
+                        "(tag=%d) — marked DONE retroactively",
+                        structure_type.name,
+                        already_complete.tag,
+                        frame=frame,
+                    )
+                    continue
+
+                # No in-progress structure and no untracked complete structure —
+                # the build was cancelled or the building was destroyed.
                 log.warning(
                     "MorphTracker: %s BUILDING order (id=%d near %s) has no matching "
                     "in-progress structure — assumed cancelled; marking FAILED for re-queue",

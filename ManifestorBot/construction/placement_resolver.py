@@ -67,31 +67,31 @@ class PlacementResolver:
         structure_type: UnitID,
         base_location: Optional[Point2] = None,
         frame: int = 0,
-    ) -> None:
+    ) -> Optional["object"]:
         """
-        Submit an async placement request to Ares.
+        Submit a placement request and return the actual dispatched worker, if known.
 
-        For Zerg this calls ``bot.request_zerg_placement()``, which queues the
-        request for Ares' ZergPlacementManager to resolve on the next tick.
-        Ares will select an appropriate worker and issue the build command
-        without further intervention from us.
+        For most structures: calls ``bot.request_zerg_placement()``, which queues
+        the request for Ares' ZergPlacementManager. Ares selects its own worker
+        asynchronously, so we return None (MorphTracker will detect whichever drone
+        disappears near base_location and handle tracking).
 
-        This is the correct path for new construction orders. The result
-        (drone dispatched) will be detected by MorphTracker on the next
-        update() call.
+        For EXTRACTOR: geysers require a Unit target, not a tile position, so Ares'
+        placement API cannot be used. We call ``bot.select_build_worker()`` and
+        ``worker.build_gas(geyser)`` directly, and return the worker so that
+        BuildAbility can register it with MorphTracker under the correct drone tag.
 
-        Parameters
-        ----------
-        bot : ManifestorBot
-        structure_type : UnitTypeId
-            What to build.
-        base_location : Point2 | None
-            Build near this base. Defaults to bot.start_location.
-        frame : int
-            Current game loop (for logging only).
+        Returns
+        -------
+        Unit | None
+            The dispatched worker (extractor only) or None (all other structures,
+            or if the extractor dispatch failed).
         """
         if base_location is None:
             base_location = bot.start_location
+
+        if structure_type == UnitID.EXTRACTOR:
+            return self._build_extractor(bot, base_location, frame)
 
         log.debug(
             "PlacementResolver: async request %s near %s",
@@ -99,42 +99,48 @@ class PlacementResolver:
             base_location,
             frame=frame,
         )
-
         bot.request_zerg_placement(base_location, structure_type)
+        return None
 
-    def request_async(self, bot, structure_type, base_location=None, frame=0):
-        if base_location is None:
-            base_location = bot.start_location
+    def _build_extractor(
+        self,
+        bot: "ManifestorBot",
+        near: Point2,
+        frame: int,
+    ) -> Optional["object"]:
+        """
+        Find a free geyser near `near`, select a worker, and issue build_gas.
 
-        # Extractors require a geyser Unit, not a position — handle separately
-        if structure_type == UnitID.EXTRACTOR:
-            self._build_extractor(bot, base_location, frame)
-            return
-
-        log.debug("PlacementResolver: async request %s near %s",
-                structure_type.name, base_location, frame=frame)
-        bot.request_zerg_placement(base_location, structure_type)
-
-    def _build_extractor(self, bot, near: Point2, frame: int) -> None:
-        """Find a free geyser near `near` and issue build_gas directly."""
+        Returns the worker Unit so the caller can register it with MorphTracker,
+        or None if no geyser / worker was available (caller should abort the order).
+        """
         existing_gas = bot.gas_buildings
         free_geysers = [
             g for g in bot.vespene_geyser.closer_than(12, near)
             if not existing_gas.closer_than(1.0, g)
         ]
         if not free_geysers:
-            log.debug("PlacementResolver: no free geyser near %s for EXTRACTOR", near, frame=frame)
-            return
+            log.debug(
+                "PlacementResolver: no free geyser near %s for EXTRACTOR",
+                near,
+                frame=frame,
+            )
+            return None
 
         geyser = min(free_geysers, key=lambda g: g.distance_to(near))
         worker = bot.select_build_worker(geyser.position)
         if worker is None:
             log.debug("PlacementResolver: no build worker available for EXTRACTOR", frame=frame)
-            return
+            return None
 
         worker.build_gas(geyser)
-        log.debug("PlacementResolver: EXTRACTOR dispatched | drone=%s geyser=%s",
-                worker.tag, geyser.tag, frame=frame)
+        log.debug(
+            "PlacementResolver: EXTRACTOR dispatched | drone=%s geyser=%s",
+            worker.tag,
+            geyser.tag,
+            frame=frame,
+        )
+        return worker
 
     # ------------------------------------------------------------------
     # Secondary API: synchronous query (for validation / commentary)

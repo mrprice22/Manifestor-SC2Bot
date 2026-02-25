@@ -109,18 +109,19 @@ class BuildAbility(Ability):
     def execute(self, unit: Unit, context: AbilityContext, bot: "ManifestorBot") -> bool:
         """
         1. Claim the top pending order.
-        2. Submit the async Ares placement request (Ares selects the worker).
-        3. Register the claim with MorphTracker.
-        4. Mark the order CLAIMED in the queue.
+        2. Dispatch the worker (either via Ares or directly for extractors).
+        3. Register the ACTUAL dispatched worker with MorphTracker.
+        4. If dispatch failed (e.g. no free geyser), immediately fail the order
+           so the tactic loop can re-evaluate on the next cycle.
 
-        Note: we do NOT issue the build command directly. We tell Ares what we want
-        (request_zerg_placement) and let it handle worker selection. The specific
-        drone executing this ability is the *requesting* drone, but Ares may choose
-        a different (closer) drone. MorphTracker will detect whichever drone
-        disappears and attribute the morph to this order.
+        For EXTRACTOR: geysers need a Unit target, so PlacementResolver selects
+        a worker directly and returns it.  We re-claim with that worker's tag so
+        MorphTracker tracks the correct drone.
 
-        This is the correct Ares integration pattern — fighting Ares' worker
-        selection would cause race conditions.
+        For all other structures: Ares handles worker selection asynchronously.
+        The requesting drone's tag is registered as a best-effort hint; if Ares
+        sends a different drone, _detect_failed_claims will detect the mismatch
+        and transition gracefully via the in-progress structure check.
         """
         queue = bot.construction_queue
         order = queue.next_pending()
@@ -129,28 +130,53 @@ class BuildAbility(Ability):
 
         frame = bot.state.game_loop
 
-        # Mark claimed in the queue
+        # Mark claimed with the requesting drone for now (may be updated below)
         queue.mark_claimed(order, unit.tag, frame)
 
-        # Request Ares placement (async — Ares dispatches worker next tick)
-        bot.placement_resolver.request_async(
+        # Dispatch the worker
+        actual_worker = bot.placement_resolver.request_async(
             bot,
             order.structure_type,
             base_location=order.base_location,
             frame=frame,
         )
 
-        # Register with MorphTracker so disappearance is tracked
-        bot.morph_tracker.register_claim(order, unit.tag)
+        if order.structure_type == UnitID.EXTRACTOR:
+            if actual_worker is None:
+                # No free geyser or no available worker — fail immediately so the
+                # order re-enters the queue on the next tactic cycle rather than
+                # waiting for the CLAIMED timeout (~20 s).
+                queue.mark_failed(order)
+                log.debug(
+                    "BUILD_DISPATCH_FAILED: %s — no geyser/worker available, order failed immediately",
+                    order.structure_type.name,
+                    frame=frame,
+                )
+                return False
+
+            # Re-claim with the actual worker so MorphTracker tracks the right drone
+            queue.mark_claimed(order, actual_worker.tag, frame)
+            bot.morph_tracker.register_claim(order, actual_worker.tag)
+            log.game_event(
+                "BUILD_DISPATCHED",
+                f"{order.structure_type.name} near {order.base_location} "
+                f"| actual_drone={actual_worker.tag}",
+                frame=frame,
+            )
+        else:
+            # For non-extractors: register the requesting drone as a best-effort hint.
+            # Ares picks its own worker asynchronously; _detect_failed_claims handles
+            # the mismatch if needed.
+            bot.morph_tracker.register_claim(order, unit.tag)
+            log.game_event(
+                "BUILD_DISPATCHED",
+                f"{order.structure_type.name} near {order.base_location} "
+                f"| requesting_drone={unit.tag} (Ares selects actual worker)",
+                frame=frame,
+            )
 
         context.ability_used = self.name
         context.command_issued = True
-
-        log.game_event(
-            "BUILD_DISPATCHED",
-            f"{order.structure_type.name} near {order.base_location} | drone={unit.tag}",
-            frame=frame,
-        )
         return True
 
     @staticmethod
