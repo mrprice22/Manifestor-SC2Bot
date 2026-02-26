@@ -156,12 +156,17 @@ class MineAbility(Ability):
                         # Long-distance-mining check.
                         # Only consider LDM when genuinely over-saturated:
                         # total assigned workers must exceed total ideal by at
-                        # least 3.  This prevents premature LDM that would
-                        # drain drones from a still-filling local base.
+                        # least _LDM_SURPLUS_THRESHOLD.  This prevents premature
+                        # LDM that would drain drones from a still-filling base.
                         total_surplus = sum(
                             th.surplus_harvesters for th in bot.townhalls.ready
                         )
                         if total_surplus < _LDM_SURPLUS_THRESHOLD:
+                            return False
+                        # Cap: don't dispatch more LDM drones than the actual
+                        # surplus.  _ldm_pressure counts drones already committed
+                        # to LDM this frame (incremented in _find_gather_target).
+                        if getattr(bot, "_ldm_pressure", 0) >= total_surplus:
                             return False
                         # Sort free expansions by distance to nearest owned
                         # base so we mine the closest safe site, not a random
@@ -316,6 +321,14 @@ class MineAbility(Ability):
             )
             if total_real_surplus < _LDM_SURPLUS_THRESHOLD:
                 return None  # not saturated enough; keep drones local
+
+            # Cap: only move as many drones to LDM as the actual surplus.
+            # Without this, every oversaturated drone gets dispatched up to
+            # the LDM site's full patch capacity (e.g. 16 for an 8-patch
+            # natural) instead of just the 3 that are actually excess.
+            # _ldm_pressure is incremented below each time we dispatch one.
+            if getattr(bot, "_ldm_pressure", 0) >= total_real_surplus:
+                return None
 
             # Sort free expansions by distance to our nearest townhall so
             # we always prefer the closest safe site over a far-flung one.
