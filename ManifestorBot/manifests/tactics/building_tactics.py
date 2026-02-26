@@ -509,15 +509,33 @@ class ZergArmyProductionTactic(BuildingTacticModule):
                 confidence += counter_ctx.production_bonus
                 evidence['counter_bonus'] = round(counter_ctx.production_bonus, 3)
 
+            # Sub-signal: bank_bias — suppress army spend to let minerals
+            # accumulate for expansion.  Combines the strategy's static
+            # baseline with a dynamic boost from LDM overflow pressure.
+            # Skipped during resource panic_mode (massive float → spend it).
+            in_panic = (
+                rp is not None and rp.is_panic_mode(bot)
+            )
+            if not in_panic:
+                ldm_pressure = getattr(bot, "_ldm_pressure", 0)
+                effective_bank_bias = (
+                    profile.bank_bias + min(0.50, ldm_pressure * 0.12)
+                )
+                if effective_bank_bias > 0:
+                    bank_pen = effective_bank_bias * 0.6
+                    confidence -= bank_pen
+                    evidence["bank_penalty"] = -round(bank_pen, 3)
+
             log.debug(
                 "ZergArmyProductionTactic: confidence=%.3f (base=%.2f agg=%.2f "
-                "behind=%.2f float=%.2f mineral_pressure=%.3f) train=%s avr=%.2f",
+                "behind=%.2f float=%.2f mineral_pressure=%.3f bank_pen=%.3f) train=%s avr=%.2f",
                 confidence,
                 _ARMY_BASE_CONFIDENCE,
                 agg_sig,
                 evidence.get("army_value_behind", 0.0),
                 evidence.get("mineral_float_pressure", 0.0),
                 evidence.get("mineral_pressure", 0.0),
+                evidence.get("bank_penalty", 0.0),
                 train_type.name,
                 avr,
                 frame=bot.state.game_loop,
@@ -859,11 +877,22 @@ class ZergUpgradeResearchTactic(BuildingTacticModule):
             confidence += counter_ctx.research_bonus
             evidence['counter_research_bonus'] = round(counter_ctx.research_bonus, 3)
 
+        # bank_bias: delay upgrades when saving for expansion.
+        # Only bites above 0.20 so mild LDM pressure doesn't stall tech.
+        profile = current_strategy.profile()
+        ldm_pressure = getattr(bot, "_ldm_pressure", 0)
+        effective_bank_bias = profile.bank_bias + min(0.50, ldm_pressure * 0.12)
+        if effective_bank_bias > 0.20:
+            bank_pen = (effective_bank_bias - 0.20) * 0.5
+            confidence -= bank_pen
+            evidence["bank_penalty"] = -round(bank_pen, 3)
+
         log.debug(
-            "ZergUpgradeResearchTactic: %s → researching %s (conf=%.2f)",
+            "ZergUpgradeResearchTactic: %s → researching %s (conf=%.2f bank_pen=%.3f)",
             building.type_id.name,
             upgrade.name,
             confidence,
+            evidence.get("bank_penalty", 0.0),
             frame=bot.state.game_loop,
         )
 
@@ -1493,7 +1522,14 @@ class ZergStructureBuildTactic(BuildingTacticModule):
         # order but hasn't started morphing yet (worker en route).
         hatch_morphing = bot.already_pending(UnitID.HATCHERY)
         current_bases = bot.townhalls.amount + hatch_morphing
-        if current_bases >= max_hatch:
+
+        # LDM pressure means workers are overflowing every current base and
+        # are mining remotely — concrete proof we need another hatchery.
+        # Allow one extra expansion beyond the strategy's phase cap so we
+        # don't get stuck waiting for a strategy switch to unlock it.
+        ldm_pressure = getattr(bot, "_ldm_pressure", 0)
+        effective_max_hatch = max_hatch + (1 if ldm_pressure > 0 else 0)
+        if current_bases >= effective_max_hatch:
             return None
 
         # Hard gate: don't queue another expansion while ANY hatchery order
@@ -1505,12 +1541,9 @@ class ZergStructureBuildTactic(BuildingTacticModule):
             return None
 
         # Mineral gate.
-        # When workers are long-distance mining (bot._ldm_pressure > 0) we are
-        # genuinely out of productive local mining slots — expand sooner by
-        # halving the mineral requirement.  Normal threshold is 300; under LDM
-        # pressure we drop to 150 so the expansion queues before we've fully
-        # banked up, matching the urgency of the situation.
-        ldm_pressure = getattr(bot, "_ldm_pressure", 0)
+        # Under LDM pressure halve the threshold (300 → 150): workers are
+        # already out there mining, so queue the expansion the moment we can
+        # afford it rather than waiting to bank up further.
         effective_mineral_threshold = (
             self._EXPAND_MIN_MINERALS // 2 if ldm_pressure > 0
             else self._EXPAND_MIN_MINERALS
@@ -1518,13 +1551,18 @@ class ZergStructureBuildTactic(BuildingTacticModule):
         if bot.minerals < effective_mineral_threshold:
             return None
 
-        # Drone count gate: require at least 10 workers per existing base
-        # before taking a new one.  No point expanding into empty hatches.
-        min_drones_to_expand = bot.townhalls.ready.amount * 10
+        # Drone count gate: require enough workers to justify a new base.
+        # Normal: 10 per existing base.  Under LDM pressure those overflow
+        # drones are exactly the workers who'd saturate the new hatchery, so
+        # accept a lower bar of 8 per base — they count, they're just parked
+        # far away right now.
+        workers_per_base = 8 if ldm_pressure > 0 else 10
+        min_drones_to_expand = bot.townhalls.ready.amount * workers_per_base
         if len(bot.workers) < min_drones_to_expand:
             log.debug(
-                "ZergStructureBuildTactic: expansion skipped — workers %d < %d needed",
-                len(bot.workers), min_drones_to_expand,
+                "ZergStructureBuildTactic: expansion skipped — workers %d < %d needed"
+                " (ldm_pressure=%d)",
+                len(bot.workers), min_drones_to_expand, ldm_pressure,
                 frame=bot.state.game_loop,
             )
             return None

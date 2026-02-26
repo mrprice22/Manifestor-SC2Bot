@@ -82,6 +82,13 @@ class TacticalProfile:
         gas_ratio_bias: Bias toward filling gas buildings.  +0.20 = muta/
                         hydra strategies saturate gas ASAP; -0.20 = ling-
                         flood/all-in routes most workers to minerals.
+        bank_bias:      Bias toward saving minerals rather than spending them.
+                        Reduces confidence of army production and upgrade
+                        research so minerals accumulate for expansion.
+                        Dynamically boosted by bot._ldm_pressure (overflow
+                        drones signal we need a new base, not more army).
+                        +0.10 = mild saving; +0.30 = strong eco hold;
+                        -0.20 = all-in, spend every mineral immediately.
     """
     engage_bias:    float = 0.0
     retreat_bias:   float = 0.0
@@ -92,6 +99,7 @@ class TacticalProfile:
     drone_bias:     float = 0.0
     expand_bias:    float = 0.0
     gas_ratio_bias: float = 0.0
+    bank_bias:      float = 0.0
     opening:       str   = "StandardOpener"  #maps to build name in zerg_builds.yml
     # Ordered list of (min_phase_threshold, CompositionTarget)
     # The last entry whose threshold <= current game_phase is active.
@@ -188,6 +196,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         engage_bias   = 0.1,
         retreat_bias  = 0.0,
         harass_bias   = 0.1,
+        bank_bias     = +0.10,  # mild saving — keep minerals available for expansions
         cohesion_bias = 0.0,
         hold_bias     = 0.0,
         sacrifice_ok  = False,
@@ -251,6 +260,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         retreat_bias  = -0.40,
         harass_bias   = -0.10,
         cohesion_bias = +0.10,
+        bank_bias     = -0.10,  # spend freely — army is the priority, not bases
         hold_bias     = -0.20,
         sacrifice_ok  = True,
         drone_bias    = -0.20,   # prioritise army over workers
@@ -311,6 +321,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         retreat_bias  = -0.50,
         harass_bias   = -0.20,
         cohesion_bias = -0.10,
+        bank_bias     = -0.20,  # never save — every mineral goes to units now
         hold_bias     = -0.30,
         sacrifice_ok  = True,
         drone_bias    = -0.50,   # stop droning — every larva is army
@@ -363,6 +374,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         retreat_bias  = -0.15,
         harass_bias   = +0.35,
         cohesion_bias = -0.15,
+        bank_bias     = +0.05,  # slight saving — more bases fuel continuous harassment
         hold_bias     = -0.10,
         sacrifice_ok  = False,
         drone_bias    =  0.00,   # keep pace with army; neither over-drones nor starves
@@ -425,6 +437,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         retreat_bias  = -0.20,
         harass_bias   = +0.25,
         cohesion_bias = -0.30,
+        bank_bias     = +0.05,  # slight saving — multi-front chaos needs base count
         hold_bias     = -0.15,
         sacrifice_ok  = False,
         drone_bias    = +0.10,   # rich economy fuels multi-front chaos
@@ -488,6 +501,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         retreat_bias  = +0.15,
         harass_bias   = +0.10,
         cohesion_bias = +0.20,
+        bank_bias     = +0.12,  # steady saving — sustained attrition needs income
         hold_bias     = +0.15,
         sacrifice_ok  = False,
         drone_bias    = +0.10,   # steady droning; rich economy sustains the grind
@@ -551,6 +565,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         retreat_bias  = +0.25,
         harass_bias   = +0.40,
         cohesion_bias = +0.10,
+        bank_bias     = +0.08,  # mild saving — harassment bases need funding
         hold_bias     = +0.10,
         sacrifice_ok  = False,
         drone_bias    = -0.05,   # slight drone de-emphasis; units keep the pressure on
@@ -614,6 +629,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         retreat_bias  = +0.40,
         harass_bias   = -0.45,
         cohesion_bias = +0.35,
+        bank_bias     = +0.30,  # strong saving — economy IS the strategy; fund every hatch
         hold_bias     = +0.40,
         sacrifice_ok  = False,
         drone_bias    = +0.30,   # drone as hard as possible; economy IS the strategy
