@@ -222,7 +222,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
                 army_supply_target=20,
                 max_hatcheries=2,
             )),
-            (0.2, CompositionTarget(
+            (0.3, CompositionTarget(
                 ratios={
                     UnitID.QUEEN:    0.10,
                     UnitID.ZERGLING: 0.20,
@@ -233,7 +233,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
                 army_supply_target=80,
                 max_hatcheries=4,
             )),
-            (0.35, CompositionTarget(
+            (0.5, CompositionTarget(
                 ratios={
                     UnitID.ROACH:     0.25,
                     UnitID.HYDRALISK: 0.15,  # anti-air + harassment response
@@ -243,7 +243,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
                 army_supply_target=120,
                 max_hatcheries=5,
             )),
-            (0.42, CompositionTarget(
+            (0.6, CompositionTarget(
                 ratios={
                     UnitID.ULTRALISK: 0.30,  # tanky front-line
                     UnitID.LURKERMP:  0.25,
