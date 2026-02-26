@@ -1842,15 +1842,35 @@ class ZergQueenProductionTactic(BuildingTacticModule):
 # Dynamic supply threshold: tight early (save larva for drones), loose late
 # (avoid supply blocks at scale).
 def _effective_overlord_threshold(bot: "ManifestorBot") -> int:
-    if bot.supply_cap < 30:
-        return 5   # early game: slightly more headroom so we don't stall larva
-    elif bot.supply_cap < 60:
-        return 8   # mid game: moderate headroom
-    else:
-        return 14  # late game: aggressive overlord production to reach 200 faster
+    """Supply-left threshold below which an overlord is queued.
 
-# Maximum overlords pending at once — 2 concurrent helps break supply blocks when scaling fast.
-_MAX_PENDING_OVERLORDS: int = 2
+    Early game uses tight thresholds so the extractor trick handles the
+    14/14 supply block (standard pro Zerg play) instead of wasting larva
+    on premature overlords.
+    """
+    cap = bot.supply_cap
+    if cap <= 14:
+        return 1   # pre-first-overlord: queue at 13/14, extractor trick at 14/14
+    elif cap <= 22:
+        return 2   # first overlord just hatched
+    elif cap < 44:
+        return 4   # early-mid game
+    elif cap < 66:
+        return 6   # mid game
+    else:
+        return 10  # late game: aggressive to reach 200
+
+
+def _max_pending_overlords(bot: "ManifestorBot") -> int:
+    """How many overlords may be in-flight simultaneously.
+
+    In early game (< 36 cap) only 1 — each overlord costs a precious
+    larva that should be a drone.  After that 2 helps break supply
+    blocks when scaling fast on multiple bases.
+    """
+    if bot.supply_cap < 36:
+        return 1
+    return 2
 
 
 class ZergOverlordProductionTactic(BuildingTacticModule):
@@ -1915,7 +1935,8 @@ class ZergOverlordProductionTactic(BuildingTacticModule):
         )
 
         # Don't queue if we already have enough overlords en route
-        if pending_overlords >= _MAX_PENDING_OVERLORDS:
+        max_pending = _max_pending_overlords(bot)
+        if pending_overlords >= max_pending:
             return None
 
         if supply_left > threshold:
