@@ -43,11 +43,50 @@ class MineAbility(Ability):
     Triggers when context.goal == "mine".
     Priority 100 — mining is the default drone behavior and should win unless
     the tactic layer has explicitly set a higher-confidence override.
+
+    Thundering-herd guard
+    ---------------------
+    ``surplus_harvesters`` / ``assigned_harvesters`` are game-engine values
+    that do NOT update within a single game loop tick.  When N drones at an
+    oversaturated base all evaluate in the same frame they all see the same
+    headroom at the destination, all get dispatched there, and overshoot —
+    causing the bases to swap roles and the whole cycle to reverse next frame.
+
+    Fix: ``_pending_inbound`` tracks how many drones have already been
+    committed to each base or geyser tag this frame.  Effective headroom is
+    reduced by the pending count so later drones in the same frame see a
+    virtually-full destination and fall through to their next best idea.
+    The dict is reset at the start of each new game loop tick.
     """
 
     UNIT_TYPES: Set[UnitID] = {UnitID.DRONE}
     GOAL: str = "mine"
     priority: int = 100
+
+    # Thundering-herd guard — shared across all MineAbility instances.
+    _pending_inbound: dict = {}   # resource_tag (int) -> pending drone count
+    _pending_frame: int = -1      # game_loop tick when dict was last reset
+
+    # ------------------------------------------------------------------
+    # Thundering-herd helpers
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _refresh_pending(cls, bot: "ManifestorBot") -> None:
+        """Reset pending counters when a new game frame begins."""
+        frame = bot.state.game_loop
+        if frame != cls._pending_frame:
+            cls._pending_inbound = {}
+            cls._pending_frame = frame
+
+    @classmethod
+    def _reserve(cls, tag: int) -> None:
+        """Mark one drone as inbound to the resource/base with *tag*."""
+        cls._pending_inbound[tag] = cls._pending_inbound.get(tag, 0) + 1
+
+    @classmethod
+    def _pending_for(cls, tag: int) -> int:
+        return cls._pending_inbound.get(tag, 0)
 
     def can_use(self, unit: Unit, context: AbilityContext, bot: "ManifestorBot") -> bool:
         """
@@ -79,8 +118,15 @@ class MineAbility(Ability):
                         # oscillates every frame: can_use fires → execute
                         # returns the nearest mineral (at the same full base)
                         # → new gather command → repeat.
+                        #
+                        # Use *effective* headroom (real surplus + pending
+                        # inbound this frame) so the thundering-herd guard
+                        # already applied by _find_gather_target is respected
+                        # here too — drones that can't find a valid slot fail
+                        # fast and fall through to their next best idea.
+                        self._refresh_pending(bot)
                         has_destination = any(
-                            th.surplus_harvesters < 0
+                            (th.surplus_harvesters + self._pending_for(th.tag)) < 0
                             and bool(bot.mineral_field.closer_than(10, th.position))
                             for th in bot.townhalls.ready
                         )
@@ -115,21 +161,35 @@ class MineAbility(Ability):
         Find the best resource for this drone to gather.
 
         Priority order:
-        1. Gas buildings that are ready and under-saturated (≤ 2 workers).
-        2. The nearest *under-saturated* townhall's mineral line — this is the
-           key change that makes drones transfer away from mined-out bases.
-        3. Any mineral field as a global fallback.
+        1. Gas buildings that are ready and under-saturated (≤ 2 workers),
+           accounting for drones already dispatched there this frame.
+        2. The nearest *under-saturated* townhall's mineral line, accounting
+           for drones already dispatched there this frame (thundering-herd
+           guard — see class docstring).
+        3. Any mineral field as a global fallback (early game only).
+
+        When a target is chosen a virtual slot is reserved via _reserve() so
+        that the next drone evaluated in the same frame sees reduced headroom
+        and won't overshoot the destination.  Drones for which no slot remains
+        get None back, execute() returns False, and the ability selector lets
+        them fall through to the next best idea (e.g. mine minerals instead of
+        gas, long-distance mine, or just keep their current gather order).
         """
-        # 1. Unsaturated gas
+        self._refresh_pending(bot)
+
+        # 1. Unsaturated gas — first geyser with effective headroom.
         for geyser in bot.gas_buildings.ready:
-            if geyser.assigned_harvesters < geyser.ideal_harvesters:
+            pending = self._pending_for(geyser.tag)
+            if geyser.assigned_harvesters + pending < geyser.ideal_harvesters:
+                self._reserve(geyser.tag)
                 return geyser
 
-        # 2. Minerals at the nearest under-saturated base.
-        #    We rank townhalls by saturation headroom (most under-saturated
+        # 2. Minerals at the nearest effectively-under-saturated base.
+        #    We rank townhalls by effective headroom (most under-saturated
         #    first) and break ties by distance so drones prefer nearby bases.
         if bot.townhalls.ready:
             best_target: Optional[Unit] = None
+            best_th_tag: Optional[int] = None
             best_score: float = float("inf")
 
             for th in bot.townhalls.ready:
@@ -137,28 +197,31 @@ class MineAbility(Ability):
                 if not nearby_minerals:
                     continue  # mined-out base — skip entirely
 
-                # surplus_harvesters = assigned - ideal (accounts for gas too).
-                # Negative means under-saturated — this base wants more workers.
-                if th.surplus_harvesters >= 0:
-                    continue  # at or above ideal — skip
+                # Effective surplus = game surplus + drones already dispatched
+                # here this frame.  Negative = still has room.
+                pending = self._pending_for(th.tag)
+                effective_surplus = th.surplus_harvesters + pending
+                if effective_surplus >= 0:
+                    continue  # virtually full this frame — skip
 
-                headroom = abs(th.surplus_harvesters)
+                headroom = abs(effective_surplus)
                 distance = unit.position.distance_to(th.position)
                 score = distance / max(headroom, 1)
 
                 if score < best_score:
                     best_score = score
+                    best_th_tag = th.tag
                     best_target = nearby_minerals.closest_to(unit.position)
 
             if best_target is not None:
+                # Reserve a virtual slot so later drones in the same frame
+                # see the reduced headroom and don't pile on.
+                self._reserve(best_th_tag)
                 return best_target
 
-            # All ready townhalls are at/above ideal saturation.
-            # Don't reassign — returning None keeps the drone's existing
-            # gather order and prevents the oversaturation oscillation bug
-            # (drone ping-pongs between a mineral patch at the same full base
-            # each frame because step 3 used to send it back to the nearest
-            # mineral, which was at that same oversaturated base).
+            # All ready townhalls are at/above effective saturation this frame.
+            # Returning None keeps the drone's existing gather order; the
+            # ability selector falls through to the next best idea.
             return None
 
         # 3. No ready townhalls yet (early game — hatchery still morphing).

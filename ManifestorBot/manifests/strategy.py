@@ -179,6 +179,67 @@ class Strategy(Enum):
 _PROFILES: dict[Strategy, TacticalProfile] = {
 
     # ─────────────────────────────────────────────────────────────────────────────
+    # STOCK_STANDARD
+    # Philosophy: textbook Zerg macro. Ling-bane-roach-ravager mid game for
+    # flexible response; lurker/hydra transition once lair and den are up;
+    # ultra-viper-infestor hive army to close. Solid and predictable execution.
+    # ─────────────────────────────────────────────────────────────────────────────
+    Strategy.STOCK_STANDARD: TacticalProfile(
+        engage_bias   = 0.0,
+        retreat_bias  = 0.2,
+        harass_bias   = 0.1,
+        cohesion_bias = 0.0,
+        hold_bias     = 0.0,
+        sacrifice_ok  = False,
+        drone_bias    = +0.08,  # drone priority: hit supply quickly
+        expand_bias   = +0.26,  # expand earlier (threshold ~70% vs default 75%)
+        gas_ratio_bias= -0.10,  # early comp is ling/queen (0 gas); don't over-collect
+        composition_curve = [
+            (0.00, CompositionTarget(
+                ratios={
+                    UnitID.QUEEN:    0.35,
+                    UnitID.ZERGLING: 0.50,
+                    UnitID.BANELING: 0.15,   # early bio answer
+                },
+                army_supply_target=20,
+                max_hatcheries=2,
+            )),
+            (0.30, CompositionTarget(
+                ratios={
+                    UnitID.QUEEN:    0.10,
+                    UnitID.ZERGLING: 0.20,
+                    UnitID.BANELING: 0.15,
+                    UnitID.ROACH:    0.40,
+                    UnitID.RAVAGER:  0.15,   # corrosive bile on bio clumps/walls
+                },
+                army_supply_target=80,
+                max_hatcheries=4,
+            )),
+            (0.50, CompositionTarget(
+                ratios={
+                    UnitID.ROACH:     0.25,
+                    UnitID.HYDRALISK: 0.15,  # anti-air + harassment response
+                    UnitID.LURKERMP:  0.40,  # lurker core
+                    UnitID.ZERGLING:  0.20,  # surround assist
+                },
+                army_supply_target=120,
+                max_hatcheries=5,
+            )),
+            (0.72, CompositionTarget(
+                ratios={
+                    UnitID.ULTRALISK: 0.30,  # tanky front-line
+                    UnitID.LURKERMP:  0.25,
+                    UnitID.VIPER:     0.15,  # parasitic bond, blinding cloud
+                    UnitID.INFESTOR:  0.15,  # fungal + neural parasite
+                    UnitID.ZERGLING:  0.15,  # surround fill
+                },
+                army_supply_target=140,
+                max_hatcheries=6,
+            )),
+        ],
+    ),
+    
+    # ─────────────────────────────────────────────────────────────────────────────
     # JUST_GO_PUNCH_EM
     # Philosophy: roach/ling flood as fast as possible, transition into ravagers
     # for corrosive bile and lurkers to crack static defence.
@@ -409,68 +470,6 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
                     UnitID.ZERGLING:  0.15,  # ling runbys still relevant
                 },
                 army_supply_target=150,
-                max_hatcheries=6,
-            )),
-        ],
-    ),
-
-
-    # ─────────────────────────────────────────────────────────────────────────────
-    # STOCK_STANDARD
-    # Philosophy: textbook Zerg macro. Ling-bane-roach-ravager mid game for
-    # flexible response; lurker/hydra transition once lair and den are up;
-    # ultra-viper-infestor hive army to close. Solid and predictable execution.
-    # ─────────────────────────────────────────────────────────────────────────────
-    Strategy.STOCK_STANDARD: TacticalProfile(
-        engage_bias   = 0.0,
-        retreat_bias  = 0.0,
-        harass_bias   = 0.0,
-        cohesion_bias = 0.0,
-        hold_bias     = 0.0,
-        sacrifice_ok  = False,
-        drone_bias    = +0.10,  # drone priority: hit supply quickly
-        expand_bias   = +0.20,  # expand earlier (threshold ~70% vs default 75%)
-        gas_ratio_bias= -0.10,  # early comp is ling/queen (0 gas); don't over-collect
-        composition_curve = [
-            (0.00, CompositionTarget(
-                ratios={
-                    UnitID.QUEEN:    0.35,
-                    UnitID.ZERGLING: 0.50,
-                    UnitID.BANELING: 0.15,   # early bio answer
-                },
-                army_supply_target=20,
-                max_hatcheries=2,
-            )),
-            (0.30, CompositionTarget(
-                ratios={
-                    UnitID.QUEEN:    0.10,
-                    UnitID.ZERGLING: 0.20,
-                    UnitID.BANELING: 0.15,
-                    UnitID.ROACH:    0.40,
-                    UnitID.RAVAGER:  0.15,   # corrosive bile on bio clumps/walls
-                },
-                army_supply_target=80,
-                max_hatcheries=4,
-            )),
-            (0.50, CompositionTarget(
-                ratios={
-                    UnitID.ROACH:     0.25,
-                    UnitID.HYDRALISK: 0.15,  # anti-air + harassment response
-                    UnitID.LURKERMP:  0.40,  # lurker core
-                    UnitID.ZERGLING:  0.20,  # surround assist
-                },
-                army_supply_target=120,
-                max_hatcheries=5,
-            )),
-            (0.72, CompositionTarget(
-                ratios={
-                    UnitID.ULTRALISK: 0.30,  # tanky front-line
-                    UnitID.LURKERMP:  0.25,
-                    UnitID.VIPER:     0.15,  # parasitic bond, blinding cloud
-                    UnitID.INFESTOR:  0.15,  # fungal + neural parasite
-                    UnitID.ZERGLING:  0.15,  # surround fill
-                },
-                army_supply_target=140,
                 max_hatcheries=6,
             )),
         ],
