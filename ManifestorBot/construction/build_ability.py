@@ -31,11 +31,11 @@ By routing construction through the unit tactic auction:
   - MorphTracker gets clean lifecycle notifications.
 
 One important distinction: BuildingTactic does NOT compete with MiningTactic
-on worker selection. Only one ConstructionOrder is claimed at a time, and
-BuildingTactic's is_applicable() returns False for drones already claimed by
-an order, drones already building, and drones in danger. MiningTactic stays
-at conf=0.45; BuildingTactic fires at conf=0.75 when an order is pending,
-so construction wins the auction comfortably.
+for most workers. A per-frame election selects exactly ONE unclaimed drone
+(the closest to the build site) as the build candidate. All other drones
+fall through to MiningTactic so they keep mining. Without this gate, every
+unclaimed drone beats MiningTactic whenever has_pending() is True, causing
+MiningTactic to never fire and idle drones to accumulate over long games.
 """
 
 from __future__ import annotations
@@ -208,18 +208,69 @@ class BuildingTactic:
     genuine emergencies.
 
     Workers currently committed to another order are excluded by is_applicable().
+
+    Drone election
+    --------------
+    Only ONE drone per game-loop tick is elected as the build candidate for each
+    pending order. All other drones fall through to MiningTactic so they keep
+    mining (or rescue idle drones). Without this gate, every unclaimed drone
+    gets BuildingTactic as its best idea whenever has_pending() is True, which
+    means MiningTactic NEVER wins — idle drones accumulate and worker idle time
+    explodes over long games.
     """
 
     name = "BuildingTactic"
     is_group_tactic = False
     blocked_strategies = frozenset()
 
+    # Per-frame election cache — class-level, computed once per game-loop tick.
+    _elected_tag: int = -1
+    _elected_frame: int = -1
+
+    @classmethod
+    def _elect_build_drone(cls, bot: "ManifestorBot") -> int:
+        """
+        Return the tag of the one drone that should pursue the top pending
+        order this game-loop tick. Cached until the next tick.
+
+        Selection criterion: closest unclaimed worker to the build site.
+        Returns -1 if no unclaimed workers exist or no order is pending.
+        """
+        frame = bot.state.game_loop
+        if cls._elected_frame == frame:
+            return cls._elected_tag
+
+        cls._elected_frame = frame
+        cls._elected_tag = -1
+
+        queue = getattr(bot, "construction_queue", None)
+        if queue is None:
+            return -1
+
+        order = queue.next_pending()
+        if order is None:
+            return -1
+
+        best_drone = None
+        best_dist = float("inf")
+        for worker in bot.workers:
+            if queue.claimed_by_drone(worker.tag) is not None:
+                continue
+            dist = worker.distance_to(order.base_location)
+            if dist < best_dist:
+                best_dist = dist
+                best_drone = worker
+
+        if best_drone is not None:
+            cls._elected_tag = best_drone.tag
+        return cls._elected_tag
+
     def is_applicable(self, unit: Unit, bot: "ManifestorBot") -> bool:
         """
         Only applies to:
         - Drone / SCV / Probe (workers)
         - When there's a pending order in the ConstructionQueue
-        - When this drone is not already claimed for another order
+        - When this drone is the elected build candidate for this tick
         """
         if unit.type_id not in {UnitID.DRONE, UnitID.SCV, UnitID.PROBE}:
             return False
@@ -228,11 +279,12 @@ class BuildingTactic:
         if queue is None or not queue.has_pending():
             return False
 
-        # This drone is already doing a build job
+        # Already claimed — MorphTracker handles this drone, tactic not needed
         if queue.claimed_by_drone(unit.tag) is not None:
             return False
 
-        return True
+        # Only the elected drone competes for the pending order this tick
+        return unit.tag == self._elect_build_drone(bot)
 
     def generate_idea(
         self,
