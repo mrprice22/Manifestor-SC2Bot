@@ -1505,7 +1505,17 @@ class ZergStructureBuildTactic(BuildingTacticModule):
             return None
 
         # Mineral gate.
-        if bot.minerals < self._EXPAND_MIN_MINERALS:
+        # When workers are long-distance mining (bot._ldm_pressure > 0) we are
+        # genuinely out of productive local mining slots — expand sooner by
+        # halving the mineral requirement.  Normal threshold is 300; under LDM
+        # pressure we drop to 150 so the expansion queues before we've fully
+        # banked up, matching the urgency of the situation.
+        ldm_pressure = getattr(bot, "_ldm_pressure", 0)
+        effective_mineral_threshold = (
+            self._EXPAND_MIN_MINERALS // 2 if ldm_pressure > 0
+            else self._EXPAND_MIN_MINERALS
+        )
+        if bot.minerals < effective_mineral_threshold:
             return None
 
         # Drone count gate: require at least 10 workers per existing base

@@ -185,8 +185,8 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
     # ultra-viper-infestor hive army to close. Solid and predictable execution.
     # ─────────────────────────────────────────────────────────────────────────────
     Strategy.STOCK_STANDARD: TacticalProfile(
-        engage_bias   = 0.0,
-        retreat_bias  = 0.2,
+        engage_bias   = 0.1,
+        retreat_bias  = 0.0,
         harass_bias   = 0.1,
         cohesion_bias = 0.0,
         hold_bias     = 0.0,

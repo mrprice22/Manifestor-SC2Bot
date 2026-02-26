@@ -358,12 +358,18 @@ def _fmt_time(v: Optional[float]) -> str:
 
 
 def _score_label(score: float) -> str:
+    if score >= 16.0:
+        return "Master League"
+    if score >= 16.0:
+        return "Platinum League"
+    if score >= 14.0:
+        return "Gold League"
     if score >= 12.0:
-        return "EXCELLENT"
+        return "Silver League"
     if score >= 6.0:
-        return "SOLID"
+        return "Bronze League"
     if score >= 2.0:
-        return "STRUGGLING"
+        return "Noob Bot"
     if score >= 0.0:
-        return "POOR"
+        return "Fail Bot"
     return "COLLAPSE"

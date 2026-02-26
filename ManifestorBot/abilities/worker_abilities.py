@@ -78,6 +78,9 @@ class MineAbility(Ability):
         if frame != cls._pending_frame:
             cls._pending_inbound = {}
             cls._pending_frame = frame
+            # Reset the long-distance-mining pressure counter so
+            # _maybe_expand always sees a fresh count for this frame.
+            bot._ldm_pressure = 0
 
     @classmethod
     def _reserve(cls, tag: int) -> None:
@@ -91,49 +94,93 @@ class MineAbility(Ability):
     def can_use(self, unit: Unit, context: AbilityContext, bot: "ManifestorBot") -> bool:
         """
         A drone can mine if:
-        - It is idle, OR its current gather target has been depleted / is at a
-          fully-saturated base (needs reassignment).
+        - It is idle, OR its current gather target is at an over-saturated
+          location and a better destination exists.
         - There is at least one mineral field or gas building accessible.
+
+        Ghost-oscillation fix
+        ---------------------
+        The previous implementation checked the nearest townhall to the
+        drone's *physical position* to detect over-saturation.  Mid-transit
+        drones (just dispatched to a new base but not yet physically there)
+        were still closest to the old base, so they were re-redirected every
+        frame, bouncing the bases back and forth.
+
+        The fix: check the saturation of the base nearest to the drone's
+        *gather target resource*, not the drone's current position.  Once a
+        drone has been given gather(mineral_B), its target is in base B's
+        mineral line.  If B is not over-saturated, can_use returns False and
+        the drone is left alone to complete its transit.
         """
         if unit.orders:
             order = unit.orders[0]
             if order.ability.id in _GATHER_ABILITIES:
-                # Check if the drone's nearest townhall is mined-out or over-
-                # saturated — if so, intervene and reassign.
-                #
-                # IMPORTANT: use surplus_harvesters (assigned - ideal) rather
-                # than comparing assigned against a mineral-only ideal count.
-                # assigned_harvesters includes gas workers; ideal_harvesters
-                # includes both mineral and gas slots.  Using the raw patch
-                # count would make gas workers appear as "over-saturation" and
-                # cause every drone to be perpetually redirected to gas.
-                if bot.townhalls.ready:
-                    closest_th = bot.townhalls.ready.closest_to(unit.position)
-                    nearby_minerals = bot.mineral_field.closer_than(10, closest_th.position)
-                    if not nearby_minerals:
-                        return True  # base mined out — reassign
-                    if closest_th.surplus_harvesters > 0:
-                        # Only reassign if there's actually an under-saturated
-                        # base to move to.  Without this check the drone
-                        # oscillates every frame: can_use fires → execute
-                        # returns the nearest mineral (at the same full base)
-                        # → new gather command → repeat.
-                        #
-                        # Use *effective* headroom (real surplus + pending
-                        # inbound this frame) so the thundering-herd guard
-                        # already applied by _find_gather_target is respected
-                        # here too — drones that can't find a valid slot fail
-                        # fast and fall through to their next best idea.
+
+                # HARVEST_RETURN: drone is returning cargo to base.  Never
+                # interrupt — it auto-resumes harvest after delivery and
+                # we'd just be adding a redundant gather command.
+                if order.ability.id in _RETURN_ABILITIES:
+                    return False
+
+                # HARVEST_GATHER: decide using the *target resource*, not the
+                # drone's current position, to avoid ghost-oscillation.
+                target_tag = order.target
+                if isinstance(target_tag, int) and bot.townhalls.ready:
+                    # Gas target: only redirect if the geyser itself is over-assigned.
+                    gas = bot.gas_buildings.find_by_tag(target_tag)
+                    if gas is not None:
+                        return gas.assigned_harvesters > gas.ideal_harvesters
+
+                    # Mineral target: redirect only if the base closest to
+                    # *that mineral* is effectively over-saturated, and there's
+                    # a better destination available (local or long-distance).
+                    mineral = bot.mineral_field.find_by_tag(target_tag)
+                    if mineral is not None:
                         self._refresh_pending(bot)
-                        has_destination = any(
+                        target_th = bot.townhalls.ready.closest_to(mineral.position)
+                        eff_surplus = (target_th.surplus_harvesters
+                                       + self._pending_for(target_th.tag))
+                        if eff_surplus <= 0:
+                            return False  # target base is fine — leave drone alone
+
+                        # Target base is over-saturated.  A valid destination
+                        # is either a local under-saturated base OR a free
+                        # expansion location for long-distance mining.
+                        has_local = any(
                             (th.surplus_harvesters + self._pending_for(th.tag)) < 0
                             and bool(bot.mineral_field.closer_than(10, th.position))
                             for th in bot.townhalls.ready
                         )
-                        return has_destination
+                        if has_local:
+                            return True
+                        # Check for a viable long-distance-mining expansion slot.
+                        our_pos = {th.position for th in bot.townhalls}
+                        for exp in getattr(bot, "expansion_locations_list", []):
+                            if exp in our_pos:
+                                continue
+                            nearby = bot.mineral_field.closer_than(10, exp)
+                            if not nearby:
+                                continue
+                            if self._pending_for(exp) < len(nearby) * 2:
+                                return True  # LDM slot available
+                        return False  # no destinations at all
+
+                # Fallback: target tag not in known resources (mid-build,
+                # returning, etc.) — use position-based check as before.
+                if bot.townhalls.ready:
+                    closest_th = bot.townhalls.ready.closest_to(unit.position)
+                    if not bot.mineral_field.closer_than(10, closest_th.position):
+                        return True  # mined-out base — reassign
+                    if closest_th.surplus_harvesters > 0:
+                        self._refresh_pending(bot)
+                        return any(
+                            (th.surplus_harvesters + self._pending_for(th.tag)) < 0
+                            and bool(bot.mineral_field.closer_than(10, th.position))
+                            for th in bot.townhalls.ready
+                        )
                 return False  # gather order is fine — let Ares handle it
 
-        # Need somewhere to mine
+        # Drone is idle — needs somewhere to mine.
         return bool(bot.mineral_field or bot.gas_buildings.ready)
 
     def execute(self, unit: Unit, context: AbilityContext, bot: "ManifestorBot") -> bool:
@@ -219,9 +266,30 @@ class MineAbility(Ability):
                 self._reserve(best_th_tag)
                 return best_target
 
-            # All ready townhalls are at/above effective saturation this frame.
-            # Returning None keeps the drone's existing gather order; the
-            # ability selector falls through to the next best idea.
+            # All local bases are at/above effective saturation this frame.
+            # Try long-distance mining at the next free expansion location.
+            # This serves two purposes:
+            #   1. Keeps overflow drones productive instead of idle.
+            #   2. Signals bot._ldm_pressure so _maybe_expand lowers its
+            #      mineral threshold and queues the expansion sooner.
+            our_positions = {th.position for th in bot.townhalls}
+            for exp in getattr(bot, "expansion_locations_list", []):
+                if exp in our_positions:
+                    continue  # already ours
+                nearby_minerals = bot.mineral_field.closer_than(10, exp)
+                if not nearby_minerals:
+                    continue  # expansion site is mined out
+                # Cap: 2 workers per mineral patch (same as normal saturation).
+                ldm_cap = len(nearby_minerals) * 2
+                if self._pending_for(exp) >= ldm_cap:
+                    continue  # this LDM site is virtually full this frame
+                # Found a viable long-distance target — reserve a slot and
+                # increment the expansion pressure counter on the bot.
+                self._reserve(exp)
+                bot._ldm_pressure = getattr(bot, "_ldm_pressure", 0) + 1
+                return nearby_minerals.closest_to(unit.position)
+
+            # Nowhere productive to send this drone this frame.
             return None
 
         # 3. No ready townhalls yet (early game — hatchery still morphing).
@@ -350,11 +418,22 @@ def register_worker_abilities() -> None:
 # ---------------------------------------------------------------------------
 # SC2 gather ability IDs (used in can_use to detect active mining)
 # ---------------------------------------------------------------------------
+
+# All gather/return abilities — used to detect that a drone is currently mining.
 _GATHER_ABILITIES: frozenset[AbilityId] = frozenset({
     AbilityId.HARVEST_GATHER,
     AbilityId.HARVEST_GATHER_DRONE,
     AbilityId.HARVEST_GATHER_SCV,
     AbilityId.HARVEST_GATHER_PROBE,
+    AbilityId.HARVEST_RETURN,
+    AbilityId.HARVEST_RETURN_DRONE,
+    AbilityId.HARVEST_RETURN_SCV,
+    AbilityId.HARVEST_RETURN_PROBE,
+})
+
+# Return-only subset — drones with these orders are mid-transit back to base
+# and should never be interrupted (they auto-resume harvest on delivery).
+_RETURN_ABILITIES: frozenset[AbilityId] = frozenset({
     AbilityId.HARVEST_RETURN,
     AbilityId.HARVEST_RETURN_DRONE,
     AbilityId.HARVEST_RETURN_SCV,
