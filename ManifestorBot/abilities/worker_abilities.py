@@ -307,23 +307,30 @@ class MineAbility(Ability):
                 return best_target
 
             # All local bases are at/above effective saturation this frame.
-            # Try long-distance mining at the next free expansion location,
-            # but only when we're meaningfully over-saturated locally (total
-            # real surplus >= _LDM_SURPLUS_THRESHOLD).  Without this gate,
-            # LDM could steal drones from a still-filling local base and
-            # leave it under-saturated.
+            # Try long-distance mining at the next free expansion location.
+            #
+            # Normally we require a meaningful local surplus (>= _LDM_SURPLUS_THRESHOLD)
+            # before dispatching to LDM, so we don't steal drones from a still-filling
+            # base.  However, when a base mines out the SC2 engine drops ideal_harvesters
+            # to 0 and the workers there lose their gather orders — they become unassigned
+            # and no longer appear in surplus_harvesters.  This makes total_real_surplus
+            # look artificially low even though there are 20+ idle drones.
+            #
+            # Stranded-drone bypass: a drone with no active orders and no local minerals
+            # to mine is sitting completely idle.  Let it LDM immediately rather than
+            # waiting for the surplus threshold.
             total_real_surplus = sum(
                 th.surplus_harvesters for th in bot.townhalls.ready
             )
-            if total_real_surplus < _LDM_SURPLUS_THRESHOLD:
+            drone_is_stranded = not unit.orders
+            if not drone_is_stranded and total_real_surplus < _LDM_SURPLUS_THRESHOLD:
                 return None  # not saturated enough; keep drones local
 
-            # Cap: only move as many drones to LDM as the actual surplus.
-            # Without this, every oversaturated drone gets dispatched up to
-            # the LDM site's full patch capacity (e.g. 16 for an 8-patch
-            # natural) instead of just the 3 that are actually excess.
-            # _ldm_pressure is incremented below each time we dispatch one.
-            if getattr(bot, "_ldm_pressure", 0) >= total_real_surplus:
+            # Cap: only move as many drones to LDM as the actual surplus,
+            # unless this drone is stranded (idle with nowhere local to mine),
+            # in which case we let it through regardless — any LDM is better
+            # than sitting completely idle.
+            if not drone_is_stranded and getattr(bot, "_ldm_pressure", 0) >= total_real_surplus:
                 return None
 
             # Use ares's precomputed ground-pathing-sorted expansion list so

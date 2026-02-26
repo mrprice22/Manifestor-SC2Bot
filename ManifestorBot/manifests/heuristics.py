@@ -35,6 +35,7 @@ class HeuristicState:
     spend_efficiency: float = 0.0   # Are we banking resources or spending them
     worker_safety_index: float = 0.0  # How exposed are our mineral lines
     saturation_delta: float = 0.0   # How many more workers could we use productively
+    mined_out_bases: int = 0        # Owned townhalls with no minerals remaining
     
     # Map heuristics
     creep_coverage_pct: float = 0.0     # Percentage of map with active creep
@@ -232,6 +233,7 @@ class HeuristicManager:
         self._update_spend_efficiency()
         self._update_worker_safety()
         self._update_saturation_delta()
+        self._update_mined_out_bases()
         
     def _update_economic_health(self) -> None:
         """Our income vs opponent's estimated income"""
@@ -300,8 +302,16 @@ class HeuristicManager:
         current_workers = len(self.bot.workers)
         self.current_state.saturation_delta = ideal_workers - current_workers
         
+    def _update_mined_out_bases(self) -> None:
+        """Count ready townhalls that have no mineral patches remaining nearby."""
+        count = 0
+        for th in self.bot.townhalls.ready:
+            if not self.bot.mineral_field.closer_than(10, th.position):
+                count += 1
+        self.current_state.mined_out_bases = count
+
     # ========== Map Heuristics ==========
-    
+
     def _update_map_heuristics(self) -> None:
         """Calculate creep coverage, vision, expansions, choke control"""
         self._update_creep_coverage()

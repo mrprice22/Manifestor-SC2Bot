@@ -1602,13 +1602,25 @@ class ZergStructureBuildTactic(BuildingTacticModule):
         profile = current_strategy.profile()
         sat_threshold = max(0.50, 0.75 - profile.expand_bias * 0.30)
 
-        if avg_saturation < sat_threshold and not banking_hard:
+        # Mined-out base bypass: if any owned base has no minerals left, workers
+        # there are idle and unproductive.  The avg_saturation calculation is
+        # misleading in this case (ideal drops to 0 for that base, making average
+        # saturation look lower than it is).  Skip the saturation gate entirely
+        # and expand immediately — there's nowhere else for those drones to go.
+        mined_out_count = heuristics.mined_out_bases
+        if mined_out_count == 0 and avg_saturation < sat_threshold and not banking_hard:
             log.debug(
                 "ZergStructureBuildTactic: expansion skipped — sat %.0f%% < threshold %.0f%% (expand_bias=%.2f)",
                 avg_saturation * 100, sat_threshold * 100, profile.expand_bias,
                 frame=bot.state.game_loop,
             )
             return None
+        if mined_out_count > 0:
+            log.info(
+                "ZergStructureBuildTactic: mined-out base detected (%d) — bypassing sat gate (%.0f%%)",
+                mined_out_count, avg_saturation * 100,
+                frame=bot.state.game_loop,
+            )
 
         # Verify a free expansion slot exists.
         taken = {th.position for th in bot.townhalls}
@@ -1621,12 +1633,15 @@ class ZergStructureBuildTactic(BuildingTacticModule):
             return None
 
         confidence = max(0.50, min(0.90, 0.75 + profile.expand_bias * 0.10))
+        if mined_out_count > 0:
+            confidence = min(0.95, confidence + 0.10)  # urgency bump for mined-out
         evidence = {
             "expansion": True,
             "current_bases": current_bases,
             "max_hatcheries": max_hatch,
             "avg_saturation": round(avg_saturation, 2),
             "expand_bias": profile.expand_bias,
+            "mined_out_bases": mined_out_count,
         }
 
         log.info(
