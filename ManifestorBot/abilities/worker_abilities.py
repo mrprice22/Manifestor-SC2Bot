@@ -168,19 +168,15 @@ class MineAbility(Ability):
                         # to LDM this frame (incremented in _find_gather_target).
                         if getattr(bot, "_ldm_pressure", 0) >= total_surplus:
                             return False
-                        # Sort free expansions by distance to nearest owned
-                        # base so we mine the closest safe site, not a random
-                        # far-flung expansion.
+                        # Use ares's precomputed ground-pathing-sorted expansion
+                        # list so we prefer the closest reachable site, not the
+                        # closest as-the-crow-flies.  get_own_expansions is
+                        # List[Tuple[Point2, float]] sorted by path distance
+                        # from our main base, computed once at game start.
                         our_pos = {th.position for th in bot.townhalls}
-                        free_exps = sorted(
-                            (e for e in getattr(bot, "expansion_locations_list", [])
-                             if e not in our_pos),
-                            key=lambda e: min(
-                                e.distance_to(th.position)
-                                for th in bot.townhalls
-                            ),
-                        )
-                        for exp in free_exps:
+                        for exp, _dist in bot.mediator.get_own_expansions:
+                            if exp in our_pos:
+                                continue
                             nearby = bot.mineral_field.closer_than(10, exp)
                             if not nearby:
                                 continue
@@ -330,17 +326,12 @@ class MineAbility(Ability):
             if getattr(bot, "_ldm_pressure", 0) >= total_real_surplus:
                 return None
 
-            # Sort free expansions by distance to our nearest townhall so
-            # we always prefer the closest safe site over a far-flung one.
+            # Use ares's precomputed ground-pathing-sorted expansion list so
+            # we prefer the closest reachable site, not closest as-the-crow-flies.
             our_positions = {th.position for th in bot.townhalls}
-            free_exps = sorted(
-                (exp for exp in getattr(bot, "expansion_locations_list", [])
-                 if exp not in our_positions),
-                key=lambda exp: min(
-                    exp.distance_to(th.position) for th in bot.townhalls
-                ),
-            )
-            for exp in free_exps:
+            for exp, _dist in bot.mediator.get_own_expansions:
+                if exp in our_positions:
+                    continue  # already owned — skip
                 nearby_minerals = bot.mineral_field.closer_than(10, exp)
                 if not nearby_minerals:
                     continue  # expansion site is mined out

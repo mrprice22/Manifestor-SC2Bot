@@ -13,7 +13,8 @@
       "Bash(find:*)",
       "Bash(cd C:\\\\Git\\\\Manifestor-SC2Bot:*)",
       "Bash(awk NR>=3450 && NR<=3510:*)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(pip show ares-sc2)"
     ]
   }
 }
