@@ -153,11 +153,29 @@ class MineAbility(Ability):
                         )
                         if has_local:
                             return True
-                        # Check for a viable long-distance-mining expansion slot.
+                        # Long-distance-mining check.
+                        # Only consider LDM when genuinely over-saturated:
+                        # total assigned workers must exceed total ideal by at
+                        # least 3.  This prevents premature LDM that would
+                        # drain drones from a still-filling local base.
+                        total_surplus = sum(
+                            th.surplus_harvesters for th in bot.townhalls.ready
+                        )
+                        if total_surplus < _LDM_SURPLUS_THRESHOLD:
+                            return False
+                        # Sort free expansions by distance to nearest owned
+                        # base so we mine the closest safe site, not a random
+                        # far-flung expansion.
                         our_pos = {th.position for th in bot.townhalls}
-                        for exp in getattr(bot, "expansion_locations_list", []):
-                            if exp in our_pos:
-                                continue
+                        free_exps = sorted(
+                            (e for e in getattr(bot, "expansion_locations_list", [])
+                             if e not in our_pos),
+                            key=lambda e: min(
+                                e.distance_to(th.position)
+                                for th in bot.townhalls
+                            ),
+                        )
+                        for exp in free_exps:
                             nearby = bot.mineral_field.closer_than(10, exp)
                             if not nearby:
                                 continue
@@ -189,10 +207,31 @@ class MineAbility(Ability):
 
         Prefers the mineral line at the nearest townhall to keep drones
         local. Falls back to the global mineral list if no townhall found.
+
+        Cargo-return on LDM
+        -------------------
+        If the selected target is a long-distance mining site (no hatchery
+        within 12 tiles) and the drone is carrying resources, issue a
+        HARVEST_RETURN first and queue the LDM gather behind it.  Without
+        this the drone would walk all the way to the LDM site, then walk
+        all the way back to drop off, then walk back again — three trips
+        instead of one.
         """
         target = self._find_gather_target(unit, bot)
         if target is None:
             return False
+
+        # Detect LDM: target mineral is not near any of our bases.
+        is_ldm = bot.townhalls.ready and not any(
+            target.position.distance_to(th.position) < 12
+            for th in bot.townhalls.ready
+        )
+        if is_ldm and (unit.is_carrying_minerals or unit.is_carrying_vespene):
+            unit(AbilityId.HARVEST_RETURN_DRONE)
+            unit.gather(target, queue=True)
+            context.ability_used = self.name
+            context.command_issued = True
+            return True
 
         unit.gather(target)
         context.ability_used = self.name
@@ -267,15 +306,28 @@ class MineAbility(Ability):
                 return best_target
 
             # All local bases are at/above effective saturation this frame.
-            # Try long-distance mining at the next free expansion location.
-            # This serves two purposes:
-            #   1. Keeps overflow drones productive instead of idle.
-            #   2. Signals bot._ldm_pressure so _maybe_expand lowers its
-            #      mineral threshold and queues the expansion sooner.
+            # Try long-distance mining at the next free expansion location,
+            # but only when we're meaningfully over-saturated locally (total
+            # real surplus >= _LDM_SURPLUS_THRESHOLD).  Without this gate,
+            # LDM could steal drones from a still-filling local base and
+            # leave it under-saturated.
+            total_real_surplus = sum(
+                th.surplus_harvesters for th in bot.townhalls.ready
+            )
+            if total_real_surplus < _LDM_SURPLUS_THRESHOLD:
+                return None  # not saturated enough; keep drones local
+
+            # Sort free expansions by distance to our nearest townhall so
+            # we always prefer the closest safe site over a far-flung one.
             our_positions = {th.position for th in bot.townhalls}
-            for exp in getattr(bot, "expansion_locations_list", []):
-                if exp in our_positions:
-                    continue  # already ours
+            free_exps = sorted(
+                (exp for exp in getattr(bot, "expansion_locations_list", [])
+                 if exp not in our_positions),
+                key=lambda exp: min(
+                    exp.distance_to(th.position) for th in bot.townhalls
+                ),
+            )
+            for exp in free_exps:
                 nearby_minerals = bot.mineral_field.closer_than(10, exp)
                 if not nearby_minerals:
                     continue  # expansion site is mined out
@@ -430,6 +482,13 @@ _GATHER_ABILITIES: frozenset[AbilityId] = frozenset({
     AbilityId.HARVEST_RETURN_SCV,
     AbilityId.HARVEST_RETURN_PROBE,
 })
+
+# Minimum total real surplus (sum of surplus_harvesters across all ready
+# townhalls) before any drones are sent to long-distance mine.
+# surplus_harvesters = assigned - ideal, so 3 means we have 3 workers more
+# than the game's recommended saturation across all current bases combined.
+# This prevents LDM from stealing drones from a still-filling local base.
+_LDM_SURPLUS_THRESHOLD: int = 3
 
 # Return-only subset — drones with these orders are mid-transit back to base
 # and should never be interrupted (they auto-resume harvest on delivery).
