@@ -216,6 +216,14 @@ class ManifestorBot(AresBot):
         )
         register_extractor_shield_ability()
 
+        # Register unit morph abilities (zergling→baneling, roach→ravager)
+        from ManifestorBot.manifests.tactics.unit_morph import register_morph_abilities
+        register_morph_abilities()
+
+        # Register ravager bile ability
+        from ManifestorBot.manifests.tactics.ravager_bile import register_bile_abilities
+        register_bile_abilities()
+
         # Set workers per gas saturation
         self.mediator.set_workers_per_gas(amount=3)
 
@@ -587,6 +595,8 @@ class ManifestorBot(AresBot):
         from ManifestorBot.manifests.tactics.extractor_shield import ExtractorShieldTactic
         from ManifestorBot.manifests.tactics.pull_the_boys import PullTheBoysTactic
         from ManifestorBot.manifests.tactics.citizens_arrest import CitizensArrestTactic
+        from ManifestorBot.manifests.tactics.unit_morph import BanelingMorphTactic, RavagerMorphTactic
+        from ManifestorBot.manifests.tactics.ravager_bile import CorrosiveBileTactic, DodgeBileTactic
 
         self.tactic_modules = [
             BuildingTactic(),
@@ -597,6 +607,8 @@ class ManifestorBot(AresBot):
             BaseDefenseTactic(),
             CommitAttackTactic(),
             CrawlerMoveTactic(),      # Uprooted crawlers: move to target then root
+            DodgeBileTactic(),        # Move all ground units out of incoming bile (0.90)
+            CorrosiveBileTactic(),    # Fire ravager bile at priority targets (0.66-0.82)
             StutterForwardTactic(),
             HarassWorkersTactic(),
             FlankTactic(),
@@ -604,6 +616,8 @@ class ManifestorBot(AresBot):
             RallyToArmyTactic(),
             OpportunisticPatrolTactic(),
             KeepUnitSafeTactic(),
+            BanelingMorphTactic(),    # Zergling → baneling when composition calls for it
+            RavagerMorphTactic(),     # Roach → ravager when composition calls for it
             OverlordBorderTactic(),
             QueenInjectTactic(),
             QueenCreepSpreadTactic(),
