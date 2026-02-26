@@ -201,15 +201,15 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
     # ultra-viper-infestor hive army to close. Solid and predictable execution.
     # ─────────────────────────────────────────────────────────────────────────────
     Strategy.STOCK_STANDARD: TacticalProfile(
-        engage_bias   = 0.1,
+        engage_bias   = 0.15,
         retreat_bias  = 0.0,
-        harass_bias   = 0.1,
+        harass_bias   = 0.15,
         bank_bias     = +0.10,  # mild saving — keep minerals available for expansions
-        cohesion_bias = 0.0,
+        cohesion_bias = 0.11,
         hold_bias     = 0.0,
         sacrifice_ok  = False,
-        drone_bias    = +0.08,  # drone priority: hit supply quickly
-        expand_bias   = +0.26,  # expand earlier (threshold ~70% vs default 75%)
+        drone_bias    = +0.06,  # drone priority: hit supply quickly
+        expand_bias   = +0.24,  # expand earlier (threshold ~70% vs default 75%)
         gas_ratio_bias= -0.10,  # early comp is ling/queen (0 gas); don't over-collect
         scout_bias    = -0.15,  # don't send overlords deep — too many die to early queens
         composition_curve = [

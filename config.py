@@ -45,3 +45,11 @@ REALTIME = False
 #   "BLEED_OUT"            — guerrilla/harassment pivot
 #   "DRONE_ONLY_FORTRESS"  — emergency turtle
 FORCE_STRATEGY = "STOCK_STANDARD"
+
+# ===== POST-GAME LOG ANALYSIS =====
+# When True, sc2_log_analyzer.py runs automatically after every game.
+# It parses the latest session's logs, generates charts (requires matplotlib),
+# and appends a row to baseline.csv so you can track performance over time.
+# Output files land in the project root (baseline.csv, seen_sessions.json, charts/).
+# Set to False to skip analysis (e.g. when running ladder games or batch tests).
+RUN_LOG_ANALYZER = True

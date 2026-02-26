@@ -15,7 +15,7 @@ from sc2.main import run_game
 from sc2.data import Race, Difficulty, AIBuild
 from ManifestorBot.manifestor_bot import ManifestorBot
 from ManifestorBot.logger import get_logger
-from config import BOT_NAME, BOT_RACE, MAP_POOL, MAP_PATH, OPPONENT_RACE, OPPONENT_DIFFICULTY, REALTIME
+from config import BOT_NAME, BOT_RACE, MAP_POOL, MAP_PATH, OPPONENT_RACE, OPPONENT_DIFFICULTY, REALTIME, RUN_LOG_ANALYZER
 
 log = get_logger()
 
@@ -80,6 +80,17 @@ def main():
     )
     
     log.info("Game finished!")
+
+    if RUN_LOG_ANALYZER:
+        import subprocess
+        analyzer = Path(__file__).parent / "sc2_log_analyzer.py"
+        log.info("Running post-game log analyzer...")
+        result = subprocess.run(
+            [sys.executable, str(analyzer)],
+            cwd=str(Path(__file__).parent),
+        )
+        if result.returncode != 0:
+            log.warning("Log analyzer exited with code %d", result.returncode)
 
 
 if __name__ == "__main__":

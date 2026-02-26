@@ -249,13 +249,17 @@ class PlacementResolver:
         # Hatcheries → nearest unoccupied expansion to our existing bases.
         # Prefer expanding close to home (safer, more likely on creep).
         if structure_type == UnitID.HATCHERY:
-            taken = {th.position for th in bot.townhalls}
-            # Also exclude locations where a hatchery is already pending.
-            pending_hatch = bot.units_and_structures.of_type(UnitID.HATCHERY).not_ready
-            for ph in pending_hatch:
-                taken.add(ph.position)
-
-            free = [exp for exp in bot.expansion_locations_list if exp not in taken]
+            # Use distance-based filtering rather than exact position equality.
+            # bot.townhalls includes all ready AND not-ready hatchery-class structures.
+            # Exact equality fails because th.position (the actual placed tile) often
+            # doesn't match the expansion_locations_list coordinate (the theoretical
+            # expansion center), causing already-occupied sites to appear free and
+            # resulting in a second hatchery being queued at the same base (macro hatch).
+            _OCCUPIED_RADIUS: float = 6.0
+            free = [
+                exp for exp in bot.expansion_locations_list
+                if not bot.townhalls.closer_than(_OCCUPIED_RADIUS, exp)
+            ]
             if free:
                 # Sort by distance to our closest existing townhall.
                 if bot.townhalls:
