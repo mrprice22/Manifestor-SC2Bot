@@ -201,12 +201,12 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
     # ultra-viper-infestor hive army to close. Solid and predictable execution.
     # ─────────────────────────────────────────────────────────────────────────────
     Strategy.STOCK_STANDARD: TacticalProfile(
-        engage_bias   = 0.15,
+        engage_bias   = 0.16,
         retreat_bias  = 0.0,
         harass_bias   = 0.15,
         bank_bias     = +0.10,  # mild saving — keep minerals available for expansions
         cohesion_bias = 0.11,
-        hold_bias     = 0.0,
+        hold_bias     = 0.05,
         sacrifice_ok  = False,
         drone_bias    = +0.06,  # drone priority: hit supply quickly
         expand_bias   = +0.24,  # expand earlier (threshold ~70% vs default 75%)
@@ -222,7 +222,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
                 army_supply_target=20,
                 max_hatcheries=2,
             )),
-            (0.30, CompositionTarget(
+            (0.15, CompositionTarget(
                 ratios={
                     UnitID.QUEEN:    0.10,
                     UnitID.ZERGLING: 0.20,
@@ -233,7 +233,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
                 army_supply_target=80,
                 max_hatcheries=4,
             )),
-            (0.50, CompositionTarget(
+            (0.30, CompositionTarget(
                 ratios={
                     UnitID.ROACH:     0.25,
                     UnitID.HYDRALISK: 0.15,  # anti-air + harassment response
@@ -243,7 +243,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
                 army_supply_target=120,
                 max_hatcheries=5,
             )),
-            (0.72, CompositionTarget(
+            (0.42, CompositionTarget(
                 ratios={
                     UnitID.ULTRALISK: 0.30,  # tanky front-line
                     UnitID.LURKERMP:  0.25,

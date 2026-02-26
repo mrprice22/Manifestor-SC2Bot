@@ -372,6 +372,313 @@ def make_charts(session_key: str, data: dict, charts_dir: Path):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# BASELINE HISTORY CHART
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Colours for each exit condition bucket.
+_EXIT_COLOUR = {
+    "victory":             "#4c9be8",   # blue
+    "defeat":              "#e05c5c",   # red
+    "crash_or_incomplete": "#888888",   # grey
+}
+_EXIT_LABEL = {
+    "victory":             "Victory",
+    "defeat":              "Defeat",
+    "crash_or_incomplete": "Crash / incomplete",
+}
+_SCORE_RE = re.compile(r"([+-]?\d+\.?\d*)\s*pts")
+
+
+def make_baseline_chart(baseline_rows: list[dict], charts_dir: Path):
+    """Bar chart of composite score per session across all baseline rows.
+
+    Each bar is coloured by exit condition (blue = victory, red = defeat,
+    grey = crash/incomplete).  A 3-game rolling average trendline is drawn
+    over the completed (non-crash) sessions so the overall performance trend
+    is easy to spot at a glance.
+
+    The chart is written to charts/baseline_performance.png and replaces any
+    previous version, so it always reflects the full history.
+    """
+    if not HAS_MPL:
+        return
+    if not baseline_rows:
+        return
+
+    # ── Parse each row into (datetime, exit, score_or_None) ──────────────────
+    sessions = []
+    for row in baseline_rows:
+        exit_cond = row.get("exit_condition", "crash_or_incomplete")
+        raw_score = row.get("stat_composite_score", "")
+        m = _SCORE_RE.search(raw_score)
+        score = float(m.group(1)) if m else None
+
+        dt_str = row.get("datetime", "")
+        try:
+            dt = datetime.fromisoformat(dt_str)
+        except (ValueError, TypeError):
+            dt = None
+
+        sessions.append({
+            "dt":    dt,
+            "exit":  exit_cond,
+            "score": score,
+        })
+
+    # Sort chronologically; rows without a datetime sink to the front.
+    sessions.sort(key=lambda s: s["dt"] or datetime.min)
+
+    n = len(sessions)
+    indices = list(range(n))
+    scores  = [s["score"] for s in sessions]
+    colours = [_EXIT_COLOUR.get(s["exit"], "#888888") for s in sessions]
+    labels  = [
+        s["dt"].strftime("%m/%d\n%H:%M") if s["dt"] else f"#{i+1}"
+        for i, s in enumerate(sessions)
+    ]
+
+    # ── Build figure ─────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(max(8, n * 0.75 + 1), 5))
+    charts_dir.mkdir(parents=True, exist_ok=True)
+
+    # Bars — use 0 height for sessions with no score so they still appear.
+    bar_heights = [s if s is not None else 0.0 for s in scores]
+    bars = ax.bar(indices, bar_heights, color=colours, zorder=2)
+
+    # Annotate each bar with the numeric score (or "n/a").
+    for bar, raw in zip(bars, scores):
+        label_text = f"{raw:+.1f}" if raw is not None else "n/a"
+        y_pos = bar.get_height() + (0.15 if bar.get_height() >= 0 else -0.6)
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            y_pos,
+            label_text,
+            ha="center", va="bottom", fontsize=7, color="white",
+        )
+
+    # 3-game rolling average over sessions that have a numeric score.
+    scored_idx    = [i for i, s in enumerate(scores) if s is not None]
+    scored_values = [scores[i] for i in scored_idx]
+    if len(scored_values) >= 2:
+        window  = min(3, len(scored_values))
+        rolling = []
+        for k in range(len(scored_values)):
+            start = max(0, k - window + 1)
+            rolling.append(sum(scored_values[start : k + 1]) / (k - start + 1))
+        ax.plot(
+            scored_idx, rolling,
+            color="#f0c040", linewidth=2, zorder=3,
+            label=f"Rolling avg ({window}-game)",
+        )
+        ax.legend(fontsize=8)
+
+    # Zero line for easy reference.
+    ax.axhline(0, color="white", linewidth=0.6, linestyle="--", alpha=0.5, zorder=1)
+
+    # ── Legend patches for exit conditions actually present ───────────────────
+    from matplotlib.patches import Patch
+    present_exits = {s["exit"] for s in sessions}
+    legend_patches = [
+        Patch(facecolor=_EXIT_COLOUR.get(e, "#888888"), label=_EXIT_LABEL.get(e, e))
+        for e in ("victory", "defeat", "crash_or_incomplete")
+        if e in present_exits
+    ]
+    ax.legend(handles=legend_patches + ax.get_legend_handles_labels()[0],
+              labels=[p.get_label() for p in legend_patches] + ax.get_legend_handles_labels()[1],
+              fontsize=8, loc="upper left")
+
+    ax.set_xticks(indices)
+    ax.set_xticklabels(labels, fontsize=7)
+    ax.set_ylabel("Composite Score  (pts / min)")
+    ax.set_title(f"Session Performance History  ({n} game{'s' if n != 1 else ''})\n"
+                 "blue = victory · red = defeat · grey = crash/incomplete")
+    fig.tight_layout()
+
+    out = charts_dir / "baseline_performance.png"
+    fig.savefig(out, dpi=120)
+    plt.close(fig)
+    print(f"  Chart: {out}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BASELINE STATS TREND CHART
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Each entry: (csv_field, display_title, y_axis_unit)
+_TREND_METRICS = [
+    ("stat_duration",           "Duration",           "minutes"),
+    ("stat_largest_army",       "Largest Army",       "supply"),
+    ("stat_largest_eco",        "Largest Eco",        "drones"),
+    ("stat_peak_game_phase",    "Peak Game Phase",    "0 – 1"),
+    ("stat_overlords_lost",     "Overlords Lost",     "count"),
+    ("stat_bases_lost",         "Bases Lost",         "count"),
+    ("stat_units_lost",         "Units Lost",         "count"),
+    ("stat_buildings_lost",     "Buildings Lost",     "count"),
+    ("stat_killed_units",       "Killed (units)",     "resource"),
+    ("stat_killed_structs",     "Killed (structs)",   "resource"),
+    ("stat_minerals_collected", "Minerals Collected", "minerals"),
+    ("stat_vespene_collected",  "Vespene Collected",  "gas"),
+    ("stat_idle_worker_time",   "Idle Worker Time",   "minutes"),
+]
+
+_TIME_FIELD_RE = re.compile(r"(?:(\d+)m\s*)?(\d+)s?$")
+_LEADING_NUM_RE = re.compile(r"([+-]?\d+\.?\d*)")
+
+
+def _parse_metric_value(field: str, raw: str) -> "float | None":
+    """Convert a raw CSV string to a float suitable for plotting.
+
+    * Time fields (duration, idle_worker_time) → decimal minutes.
+    * Fields with unit suffixes (largest_army, largest_eco) → leading number.
+    * Plain numeric fields → direct float.
+    Returns None when the value is empty or unparseable.
+    """
+    raw = raw.strip()
+    if not raw:
+        return None
+
+    # Time strings: "7m 04s", "45s", "356m 50s"
+    if field in ("stat_duration", "stat_idle_worker_time"):
+        m = _TIME_FIELD_RE.search(raw)
+        if m:
+            mins = int(m.group(1) or 0)
+            secs = int(m.group(2) or 0)
+            return mins + secs / 60.0
+        return None
+
+    # Leading numeric — handles "59.0 supply", "18 drones", "0.34", "90"
+    m = _LEADING_NUM_RE.search(raw)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            return None
+    return None
+
+
+def make_stats_trend_chart(baseline_rows: list[dict], charts_dir: Path):
+    """Grid of subplots showing each tracked stat across all baseline sessions.
+
+    Only sessions that have at least one numeric stat value are plotted on the
+    x-axis, so crashes/incomplete runs are silently skipped per-metric rather
+    than breaking the x-axis for everyone.  Dots are coloured by exit condition
+    (blue = victory, red = defeat, grey = crash/incomplete) so performance
+    context is always visible.
+
+    Output: charts/baseline_stats_trend.png
+    """
+    if not HAS_MPL:
+        return
+    if not baseline_rows:
+        return
+
+    # Sort rows chronologically
+    def _row_dt(row: dict):
+        try:
+            return datetime.fromisoformat(row.get("datetime", ""))
+        except (ValueError, TypeError):
+            return datetime.min
+
+    rows = sorted(baseline_rows, key=_row_dt)
+
+    # Build a short x-axis label per row
+    def _row_label(row: dict) -> str:
+        try:
+            dt = datetime.fromisoformat(row["datetime"])
+            return dt.strftime("%m/%d\n%H:%M")
+        except (KeyError, ValueError, TypeError):
+            return row.get("session_key", "?")[-12:]
+
+    x_labels = [_row_label(r) for r in rows]
+    x_indices = list(range(len(rows)))
+    dot_colours = [_EXIT_COLOUR.get(r.get("exit_condition", ""), "#888888") for r in rows]
+
+    # ── Build figure ─────────────────────────────────────────────────────────
+    n_metrics = len(_TREND_METRICS)
+    ncols = 2
+    nrows = math.ceil(n_metrics / ncols)
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(15, nrows * 3),
+        sharex=True,
+    )
+    axes_flat = list(axes.flatten()) if n_metrics > 1 else [axes]
+
+    for ax_idx, (field, title, unit) in enumerate(_TREND_METRICS):
+        ax = axes_flat[ax_idx]
+
+        # Parse values; keep track of which x-positions have data
+        values = [_parse_metric_value(field, r.get(field, "")) for r in rows]
+        has_data = [v is not None for v in values]
+
+        if not any(has_data):
+            ax.set_title(title, fontsize=9)
+            ax.text(0.5, 0.5, "no data", transform=ax.transAxes,
+                    ha="center", va="center", color="grey", fontsize=8)
+            ax.set_ylabel(unit, fontsize=7)
+            continue
+
+        # Replace None with NaN so matplotlib draws gaps rather than skipping
+        plot_values = [v if v is not None else float("nan") for v in values]
+
+        # Line connecting available points
+        ax.plot(x_indices, plot_values, color="#aaaaaa", linewidth=1,
+                zorder=1, linestyle="--")
+
+        # Scatter with exit-condition colour
+        for i, (v, col) in enumerate(zip(plot_values, dot_colours)):
+            if not math.isnan(v):
+                ax.scatter(i, v, color=col, s=30, zorder=3)
+
+        # 3-point rolling average over non-NaN values
+        scored_x = [i for i, v in enumerate(plot_values) if not math.isnan(v)]
+        scored_v = [plot_values[i] for i in scored_x]
+        if len(scored_v) >= 2:
+            window = min(3, len(scored_v))
+            rolling = []
+            for k in range(len(scored_v)):
+                start = max(0, k - window + 1)
+                rolling.append(sum(scored_v[start : k + 1]) / (k - start + 1))
+            ax.plot(scored_x, rolling, color="#f0c040", linewidth=1.5,
+                    zorder=2, label="rolling avg")
+
+        ax.set_title(title, fontsize=9)
+        ax.set_ylabel(unit, fontsize=7)
+        ax.tick_params(axis="y", labelsize=7)
+
+    # Hide any unused panels
+    for j in range(n_metrics, len(axes_flat)):
+        axes_flat[j].set_visible(False)
+
+    # Shared x-axis tick labels on the bottom row panels only
+    for ax in axes_flat[:n_metrics]:
+        ax.set_xticks(x_indices)
+        ax.set_xticklabels(x_labels, fontsize=6, rotation=45, ha="right")
+
+    # Legend for exit conditions (drawn once on first subplot)
+    from matplotlib.patches import Patch
+    legend_patches = [
+        Patch(facecolor=_EXIT_COLOUR["victory"],             label="Victory"),
+        Patch(facecolor=_EXIT_COLOUR["defeat"],              label="Defeat"),
+        Patch(facecolor=_EXIT_COLOUR["crash_or_incomplete"], label="Crash/incomplete"),
+    ]
+    axes_flat[0].legend(handles=legend_patches, fontsize=7, loc="upper left")
+
+    n_complete = sum(1 for r in rows if r.get("exit_condition") in ("victory", "defeat"))
+    fig.suptitle(
+        f"Stat Trends Across Sessions  ({len(rows)} total · {n_complete} complete)",
+        fontsize=12,
+    )
+    fig.tight_layout()
+
+    charts_dir.mkdir(parents=True, exist_ok=True)
+    out = charts_dir / "baseline_stats_trend.png"
+    fig.savefig(out, dpi=120)
+    plt.close(fig)
+    print(f"  Chart: {out}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # BASELINE CSV
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -501,6 +808,8 @@ def main():
 
     save_baseline(baseline_rows, args.baseline)
     save_seen_sessions(seen, args.seen)
+    make_baseline_chart(baseline_rows, charts_dir)
+    make_stats_trend_chart(baseline_rows, charts_dir)
 
     print(f"\n✓ Baseline updated → {args.baseline}  ({len(baseline_rows)} total rows)")
     print(f"✓ Seen sessions  → {args.seen}")

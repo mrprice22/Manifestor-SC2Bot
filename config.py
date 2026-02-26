@@ -23,7 +23,7 @@ MAP_POOL = [
 # ===== OPPONENT SETTINGS =====
 # Computer opponent settings (for local games)
 OPPONENT_RACE = "Zerg"  # Terran, Zerg, Protoss, Random
-OPPONENT_DIFFICULTY = "Hard"  # VeryEasy, Easy, Medium, Hard, VeryHard, etc.
+OPPONENT_DIFFICULTY = "VeryHard"  # VeryEasy, Easy, Medium, Hard, VeryHard, etc.
 
 # ===== GAME MODE =====
 # Set to True to play in realtime (like a human), False for faster simulation

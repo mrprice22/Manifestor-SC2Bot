@@ -20,6 +20,27 @@ from config import BOT_NAME, BOT_RACE, MAP_POOL, MAP_PATH, OPPONENT_RACE, OPPONE
 log = get_logger()
 
 
+def _check_analyzer_files_writable() -> bool:
+    """Return True if all files the log analyzer will write are accessible.
+
+    Opens each file in append mode (creating it if absent, not truncating if
+    present) so the check is non-destructive.  Returns False and prints a
+    clear message if any file is locked.
+    """
+    from sc2_log_analyzer import BASELINE_FILE, SEEN_SESSIONS_FILE
+    files_to_check = [BASELINE_FILE, SEEN_SESSIONS_FILE]
+    all_ok = True
+    for path in files_to_check:
+        try:
+            with open(path, "a"):
+                pass
+        except PermissionError:
+            print(f"\n[ERROR] Cannot write to '{path}' — close it in Excel / any other program and try again.\n")
+            log.error("Pre-flight check failed: '%s' is locked by another process.", path)
+            all_ok = False
+    return all_ok
+
+
 def main():
     """Run a single game for testing"""
 
@@ -68,6 +89,10 @@ def main():
     else:
         map_obj = maps.get(map_name)
     
+    if RUN_LOG_ANALYZER and not _check_analyzer_files_writable():
+        log.error("Aborting — close the locked file(s) above and re-run.")
+        return
+
     log.info("Starting game on %s ...", map_name)
     run_game(
         map_obj,
