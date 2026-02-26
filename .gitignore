@@ -7,9 +7,12 @@ publish/
 # Repo dump file
 RepoDump.md
 
-#Log Folder
+#Log Folder and charts
 logs/
 *.log
+baseline.csv
+seen_sessions.json
+charts/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
