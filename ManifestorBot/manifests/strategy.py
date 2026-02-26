@@ -89,6 +89,13 @@ class TacticalProfile:
                         drones signal we need a new base, not more army).
                         +0.10 = mild saving; +0.30 = strong eco hold;
                         -0.20 = all-in, spend every mineral immediately.
+        scout_bias:     Bias toward sending overlords into scout slots
+                        (vision-edge positions deep toward enemy territory).
+                        +0.25 = harassment strategies need map intel;
+                        -0.30 = fortress/all-in hides overlords safely.
+                        Values below -0.05 disable scout slots entirely and
+                        recall any scouts already deployed to rear-guard.
+                        Default 0.0 = neutral (allow scouts up to cap).
     """
     engage_bias:    float = 0.0
     retreat_bias:   float = 0.0
@@ -100,6 +107,7 @@ class TacticalProfile:
     expand_bias:    float = 0.0
     gas_ratio_bias: float = 0.0
     bank_bias:      float = 0.0
+    scout_bias:     float = 0.0
     opening:       str   = "StandardOpener"  #maps to build name in zerg_builds.yml
     # Ordered list of (min_phase_threshold, CompositionTarget)
     # The last entry whose threshold <= current game_phase is active.
@@ -203,6 +211,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         drone_bias    = +0.08,  # drone priority: hit supply quickly
         expand_bias   = +0.26,  # expand earlier (threshold ~70% vs default 75%)
         gas_ratio_bias= -0.10,  # early comp is ling/queen (0 gas); don't over-collect
+        scout_bias    = -0.15,  # don't send overlords deep — too many die to early queens
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
@@ -266,6 +275,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         drone_bias    = -0.20,   # prioritise army over workers
         expand_bias   = -0.10,   # hold expansions; army is the priority
         gas_ratio_bias=  0.00,   # neutral — roach/ling needs some gas
+        scout_bias    = +0.10,   # need to see targets; send scouts to find army position
         opening      = "EarlyAggression",
         composition_curve = [
             (0.00, CompositionTarget(
@@ -327,6 +337,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         drone_bias    = -0.50,   # stop droning — every larva is army
         expand_bias   = -0.30,   # never expand; commit everything now
         gas_ratio_bias= -0.20,   # mineral-heavy; ling-bane-roach all-in
+        scout_bias    = -0.20,   # pull overlords back — intel irrelevant, just commit
         opening      = "EarlyAggression",
         composition_curve = [
             (0.00, CompositionTarget(
@@ -380,6 +391,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         drone_bias    =  0.00,   # keep pace with army; neither over-drones nor starves
         expand_bias   = +0.10,   # more bases fuel continuous harassment
         gas_ratio_bias= +0.20,   # mutas/hydras are gas-hungry; fill extractors fast
+        scout_bias    = +0.25,   # harassment needs map vision; keep scouts on their expos
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
@@ -443,6 +455,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         drone_bias    = +0.10,   # rich economy fuels multi-front chaos
         expand_bias   = +0.15,   # more bases = more production capacity for chaos
         gas_ratio_bias= +0.10,   # mutas + banes + lurkers all need gas
+        scout_bias    = +0.15,   # need to know which fronts to hit simultaneously
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
@@ -507,6 +520,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         drone_bias    = +0.10,   # steady droning; rich economy sustains the grind
         expand_bias   = +0.05,   # modest push; expand when safe, not eagerly
         gas_ratio_bias=  0.00,   # lurkers/infestors need gas but so do ravagers; neutral
+        scout_bias    = +0.05,   # mild scouting; need to see pushes forming
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
@@ -571,6 +585,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         drone_bias    = -0.05,   # slight drone de-emphasis; units keep the pressure on
         expand_bias   = +0.10,   # more bases fuel sustained harassment
         gas_ratio_bias= +0.20,   # mutas/broodlords/vipers are all gas-hungry
+        scout_bias    = +0.10,   # mutas provide some vision; mild scout support
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
@@ -635,6 +650,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         drone_bias    = +0.30,   # drone as hard as possible; economy IS the strategy
         expand_bias   = +0.25,   # expand early and often; more bases = more drones
         gas_ratio_bias= -0.25,   # cut gas workers — drones should mine minerals for spines
+        scout_bias    = -0.30,   # pull all overlords home; we can't afford to lose any
         opening     = "TurtleEco",
         composition_curve = [
             (0.00, CompositionTarget(

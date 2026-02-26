@@ -20,6 +20,31 @@ Design decisions
 - The tactic is never blocked by any strategy: early warning is always
   valuable regardless of whether we're turtling or all-in.
 
+Scout slots and scout_bias
+--------------------------
+"Scout slots" are vision-edge positions deep toward enemy territory —
+the overlords placed there push the explored frontier and can end up
+close to the enemy base. This is high-risk: queens and static defence
+kill unescorted overlords easily.
+
+The active strategy's scout_bias (from TacticalProfile) controls
+whether scout slots are used at all:
+  scout_bias < SCOUT_BIAS_THRESHOLD (-0.05)  → scout slots disabled;
+      any overlord currently on a scout slot is recalled to rear-guard.
+  scout_bias >= SCOUT_BIAS_THRESHOLD          → scout slots allowed
+      (subject to max_scout_slots cap in BorderConfig).
+
+Watch slots (creep-edge sentinels around our own territory) are always
+filled regardless of scout_bias.
+
+Wounded overlord recall
+-----------------------
+If an overlord's health falls below WOUNDED_HEALTH_THRESHOLD (40%),
+it is unconditionally recalled to the nearest rear-guard slot so it
+can regenerate, overriding both the on-station check and the danger
+confidence penalty.  This prevents injured overlords from sitting on
+a forward scout position until they die.
+
 Suppression note
 ----------------
 Overlord movement is cheap and idempotent, but we don't want to spam
@@ -31,6 +56,7 @@ re-check every 2 seconds is more than enough.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Optional, FrozenSet
 
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
@@ -48,6 +74,8 @@ if TYPE_CHECKING:
     from ManifestorBot.manifestor_bot import ManifestorBot
     from ManifestorBot.manifests.heuristics import HeuristicState
     from ManifestorBot.manifests.strategy import Strategy
+
+log = logging.getLogger(__name__)
 
 
 class OverlordBorderTactic(TacticModule):
@@ -69,6 +97,17 @@ class OverlordBorderTactic(TacticModule):
     Reduced by:
       -0.20  if the overlord is in danger (enemy units nearby) — let
              KeepUnitSafe handle it first
+
+    Scout slot gating
+    -----------------
+    Scout slots are only filled when the active strategy's scout_bias >= -0.05.
+    Overlords already in scout slots are recalled to rear-guard when the
+    strategy drops below this threshold.
+
+    Wounded recall
+    --------------
+    Overlords below WOUNDED_HEALTH_THRESHOLD (40% HP) are always sent to a
+    rear-guard slot with high confidence (0.75) regardless of other signals.
     """
 
     # Overlords closer than this to their assigned slot don't need to move
@@ -82,6 +121,12 @@ class OverlordBorderTactic(TacticModule):
 
     # Scout confidence is slightly lower so creep-edge fills first
     SCOUT_CONFIDENCE: float = 0.65
+
+    # Below this health fraction, unconditionally recall overlord to rear-guard
+    WOUNDED_HEALTH_THRESHOLD: float = 0.40
+
+    # scout_bias must be >= this for scout slots to be used
+    SCOUT_BIAS_THRESHOLD: float = -0.05
 
     # Only fire for OVERLORD (not OVERSEER — different role)
     _OVERLORD_TYPES = {UnitID.OVERLORD, UnitID.OVERLORDTRANSPORT}
@@ -105,6 +150,19 @@ class OverlordBorderTactic(TacticModule):
         if border_map is None:
             return False
 
+        # Wounded overlords always need re-evaluation (may need to retreat to heal)
+        if unit.health_percentage < self.WOUNDED_HEALTH_THRESHOLD:
+            return True
+
+        # If the overlord is on a scout slot but scouting is now disabled,
+        # force re-evaluation so we can recall it to rear-guard
+        if border_map._scout_assignments.get(unit.tag) is not None:
+            current_strategy = getattr(bot, 'current_strategy', None)
+            if current_strategy is not None:
+                scout_bias = current_strategy.profile().scout_bias
+                if scout_bias < self.SCOUT_BIAS_THRESHOLD:
+                    return True  # recall this scout
+
         # If already assigned to a slot and on-station, nothing to do
         assigned_slot = (
             border_map._assignments.get(unit.tag)
@@ -125,9 +183,33 @@ class OverlordBorderTactic(TacticModule):
         current_strategy: 'Strategy',
     ) -> Optional[TacticIdea]:
         border_map = bot.territory_border_map
-        confidence = self.BASE_CONFIDENCE
         evidence: dict = {}
-        is_scout = False
+
+        # --- Priority 1: wounded overlord — recall to rear-guard to regenerate ---
+        if unit.health_percentage < self.WOUNDED_HEALTH_THRESHOLD:
+            retreat_slot = self._nearest_rear_guard(unit, border_map)
+            if retreat_slot is not None:
+                border_map.release(unit.tag)
+                border_map.assign_rear_guard(unit.tag, retreat_slot)
+                evidence['wounded_retreat'] = True
+                evidence['health_pct'] = round(unit.health_percentage, 2)
+                log.debug(
+                    "OverlordBorderTactic: overlord %d wounded (%.0f%%), recalling to rear-guard",
+                    unit.tag, unit.health_percentage * 100,
+                )
+                return TacticIdea(
+                    tactic_module=self,
+                    confidence=0.75,  # high — health preservation matters
+                    evidence=evidence,
+                    target=retreat_slot,
+                )
+            return None
+
+        # --- Resolve scout_bias from active strategy ---
+        scout_bias = current_strategy.profile().scout_bias
+        allow_scouts = scout_bias >= self.SCOUT_BIAS_THRESHOLD
+
+        confidence = self.BASE_CONFIDENCE
 
         # --- sub-signal: danger near this overlord ---
         nearby_enemies = bot.enemy_units.closer_than(self.DANGER_RADIUS, unit.position)
@@ -151,13 +233,15 @@ class OverlordBorderTactic(TacticModule):
             return None
 
         # --- decide pool: scout vs creep-edge sentinel ---
-        slot, is_scout = self._pick_slot(unit, bot, border_map, heuristics)
+        slot, is_scout = self._pick_slot(unit, bot, border_map, heuristics, allow_scouts)
         if slot is None:
             return None
 
         if is_scout:
-            confidence = self.SCOUT_CONFIDENCE
+            # Apply scout_bias to scout confidence (positive bias boosts it)
+            confidence = self.SCOUT_CONFIDENCE + scout_bias
             evidence['role'] = 'scout'
+            evidence['scout_bias'] = round(scout_bias, 3)
         else:
             evidence['role'] = 'sentinel'
 
@@ -214,6 +298,7 @@ class OverlordBorderTactic(TacticModule):
                 or slot in border_map.scout_slots
                 or slot in rg_slots
                 or idea.evidence.get('retreat', False)
+                or idea.evidence.get('wounded_retreat', False)
             )
             if not valid:
                 border_map.release(unit.tag)
@@ -244,31 +329,40 @@ class OverlordBorderTactic(TacticModule):
         bot: 'ManifestorBot',
         border_map,
         heuristics: 'HeuristicState',
+        allow_scouts: bool = True,
     ) -> tuple[Optional[Point2], bool]:
         """
         Choose the best uncovered slot for this overlord.
 
         Returns (slot, is_scout). Creep-edge sentinel slots are preferred;
-        scout slots are only used when sentinel slots are full and the
-        scout cap hasn't been reached.
+        scout slots are only used when sentinel slots are full, the scout
+        cap hasn't been reached, AND allow_scouts is True.
+
+        If the overlord is currently assigned to a scout slot but scouts
+        are no longer allowed, its assignment is released and it falls
+        through to a rear-guard or sentinel slot instead.
         """
         # Honour existing sentinel assignment if still valid
         current = border_map._assignments.get(unit.tag)
         if current is not None and current in border_map.watch_slots:
             return current, False
 
-        # Honour existing scout assignment if still valid
+        # Check existing scout assignment
         current_scout = border_map._scout_assignments.get(unit.tag)
-        if current_scout is not None and current_scout in border_map.scout_slots:
-            return current_scout, True
+        if current_scout is not None:
+            if allow_scouts and current_scout in border_map.scout_slots:
+                return current_scout, True
+            else:
+                # Scouts disabled or slot gone — release and fall through
+                border_map.release(unit.tag)
 
         # --- Try creep-edge sentinel slots first ---
         slot = self._pick_from_pool(unit, bot, border_map.get_uncovered_slots())
         if slot is not None:
             return slot, False
 
-        # --- Fall back to scout slots if under the cap ---
-        if border_map.scout_assignment_count < border_map.cfg.max_scout_slots:
+        # --- Fall back to scout slots only if allowed and under the cap ---
+        if allow_scouts and border_map.scout_assignment_count < border_map.cfg.max_scout_slots:
             slot = self._pick_from_pool(unit, bot, border_map.get_uncovered_scout_slots())
             if slot is not None:
                 return slot, True
