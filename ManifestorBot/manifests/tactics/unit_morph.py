@@ -78,8 +78,8 @@ _WORKER_AND_SUPPLY: frozenset = frozenset({
 
 # Base confidence for a morph idea.  Raised by the deficit, capped at 0.78
 # so active-combat tactics (0.70-0.90+) still usually outbid us.
-_BASE_CONFIDENCE = 0.58
-_MAX_CONFIDENCE  = 0.78
+_BASE_CONFIDENCE = 0.72   # was 0.58
+_MAX_CONFIDENCE  = 0.84   # was 0.78
 
 
 # ---------------------------------------------------------------------------
@@ -201,9 +201,15 @@ class BanelingMorphTactic(TacticModule):
         cocoon_count = len(bot.units(UnitID.BANELINGCOCOON))
         baneling_count = len(bot.units(UnitID.BANELING)) + cocoon_count
         current_ratio = baneling_count / total
-
-        if current_ratio >= target_ratio:
-            return None  # already at or above target
+        
+        # Also morph if we have fewer than N banelings regardless of ratio,
+        # as long as ratio target > 0
+        MIN_BANELING_COUNT = 8
+        if baneling_count < MIN_BANELING_COUNT and target_ratio > 0.0:
+            # override ratio gate — we need at least a base pack
+            pass  # fall through to confidence scoring
+        elif current_ratio >= target_ratio:
+            return None
 
         # Source-unit guard: keep at least _MIN_ZERGLINGS_AFTER_MORPH alive.
         # (The production tactic will replenish them from larva.)

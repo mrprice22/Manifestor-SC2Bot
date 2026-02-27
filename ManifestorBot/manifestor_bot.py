@@ -57,6 +57,7 @@ from ManifestorBot.abilities.worker_abilities import (
     register_worker_abilities,
     MiningTactic,
 )
+from ManifestorBot.abilities.morph_baneling import MorphBanelingTactic
 from ManifestorBot.manifests.scout_ledger import ScoutLedger
 from ManifestorBot.manifests.zergling_scout import ZerglingScouter
 from ManifestorBot.construction import (
@@ -219,6 +220,8 @@ class ManifestorBot(AresBot):
         # Register unit morph abilities (zergling→baneling, roach→ravager)
         from ManifestorBot.manifests.tactics.unit_morph import register_morph_abilities
         register_morph_abilities()
+
+        ability_registry.register(UnitID.BANELING, BanelingTargetAbility())
 
         # Register ravager bile ability
         from ManifestorBot.manifests.tactics.ravager_bile import register_bile_abilities

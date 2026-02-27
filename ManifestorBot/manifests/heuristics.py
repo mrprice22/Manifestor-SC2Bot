@@ -288,19 +288,32 @@ class HeuristicManager:
         nothing to the ideal count, which prevents the bot from over-producing
         drones it cannot employ.
         """
+        # Get the strategy's max hatchery cap for this phase
+        profile = self.bot.current_strategy.profile()
+        heuristics = self.current_state
+        comp = profile.active_composition(heuristics.game_phase)
+        max_hatch = comp.max_hatcheries if comp is not None else 999
+
         ideal_workers = 0
+        counted_bases = 0
         for th in self.bot.townhalls.ready:
-            # Count mineral patches still alive within mining range of this TH.
+            if counted_bases >= max_hatch:
+                break  # don't count workers for bases beyond the cap
             patches = self.bot.mineral_field.closer_than(10, th.position)
-            # Standard saturation: 2 workers per mineral patch.
             ideal_workers += len(patches) * 2
-            # Add gas slots (3 per ready extractor at this base).
             local_gas = self.bot.gas_buildings.ready.closer_than(10, th.position)
             for g in local_gas:
-                ideal_workers += g.ideal_harvesters  # typically 3
+                ideal_workers += g.ideal_harvesters
+            counted_bases += 1
 
-        current_workers = len(self.bot.workers)
-        self.current_state.saturation_delta = ideal_workers - current_workers
+    # Additionally cap by the army supply target: leave room for army
+    comp2 = profile.active_composition(heuristics.game_phase)
+    if comp2 is not None and comp2.army_supply_target > 0:
+        max_worker_supply = 200 - comp2.army_supply_target
+        ideal_workers = min(ideal_workers, max_worker_supply)
+
+    current_workers = len(self.bot.workers)
+    self.current_state.saturation_delta = ideal_workers - current_workers
         
     def _update_mined_out_bases(self) -> None:
         """Count ready townhalls that have no mineral patches remaining nearby."""

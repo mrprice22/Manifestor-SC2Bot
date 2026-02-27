@@ -226,6 +226,8 @@ class ZergWorkerProductionTactic(BuildingTacticModule):
         confidence = 0.0
         evidence: dict = {}
 
+
+      
         # Sub-signal: saturation delta — how many workers are still needed
         delta = heuristics.saturation_delta
         if delta <= 0:
@@ -258,6 +260,12 @@ class ZergWorkerProductionTactic(BuildingTacticModule):
         if profile.drone_bias != 0.0:
             confidence += profile.drone_bias
             evidence["drone_bias"] = profile.drone_bias
+
+        comp = profile.active_composition(heuristics.game_phase)
+        if comp is not None and comp.army_supply_target > 0:
+            max_worker_supply = 200 - comp.army_supply_target
+            if bot.supply_workers >= max_worker_supply:
+                return None  # leave supply room for army target    
 
         log.debug(
             "ZergWorkerProductionTactic: confidence=%.3f (sat=%.3f econ_lag=%.3f early=%.3f drone_bias=%.3f delta=%.1f)",
@@ -1103,6 +1111,18 @@ class ZergHatcheryRebuildTactic(BuildingTacticModule):
     def generate_idea(self, building, bot, heuristics, current_strategy, counter_ctx):
         lost = getattr(bot, '_lost_hatchery_positions', [])
 
+        # Don't rebuild if we're already at or above the strategy's hatch cap
+        profile = current_strategy.profile()
+        comp = profile.active_composition(heuristics.game_phase) if heuristics else None
+        if comp is not None:
+            current_bases = bot.townhalls.amount + bot.already_pending(UnitID.HATCHERY)
+            if current_bases >= comp.max_hatcheries:
+                log.debug(
+                    "ZergHatcheryRebuildTactic: at hatch cap (%d/%d) — skipping rebuild",
+                    current_bases, comp.max_hatcheries,
+                )
+                return None
+                
         # Remove positions where a townhall already exists (rebuild complete)
         cleaned = [
             pos for pos in lost
@@ -2004,6 +2024,16 @@ class ZergOverlordProductionTactic(BuildingTacticModule):
 
         if supply_left > threshold:
             return None  # not supply-pressured yet
+
+        # Already at max supply cap — no more overlords ever needed
+        if bot.supply_cap >= 200:
+            return None
+
+        # Hard cap at 25 overlords (sufficient to reach 200 supply)
+        MAX_OVERLORDS = 25
+        existing = bot.units(UnitID.OVERLORD).amount + int(bot.already_pending(UnitID.OVERLORD))
+        if existing >= MAX_OVERLORDS:
+            return None
 
         deficit = threshold - supply_left
         # Scale confidence: critical at 0 supply left, moderate near threshold
