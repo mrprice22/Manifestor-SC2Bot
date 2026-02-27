@@ -2663,6 +2663,13 @@ class ZergStaticDefenseTactic(BuildingTacticModule):
         UnitID.HIVE,
     })
 
+    # Class-level cooldown: prevent queuing a new crawler within ~10 s of the
+    # last successful enqueue.  The ConstructionQueue's per-type dedup prevents
+    # duplicate orders, but without this gate the tactic immediately queues a
+    # different crawler type (spine → spore → spine) on consecutive loop ticks.
+    _last_enqueued_frame: int = -1
+    _CRAWLER_COOLDOWN_FRAMES: int = 224  # ~10 s at 22.4 fps / GameStep 2
+
     def is_applicable(self, building: "Unit", bot: "ManifestorBot") -> bool:
         if building.type_id not in self.BUILDING_TYPES:
             return False
@@ -2688,6 +2695,38 @@ class ZergStaticDefenseTactic(BuildingTacticModule):
         is_emergency = heuristics.threat_level >= _EMERGENCY_THREAT_FOR_CRAWLERS
 
         if not (is_fortress or is_emergency):
+            return None
+
+        # ── Early-game gate ──────────────────────────────────────────────────
+        # Emergency crawlers are useless before phase 0.30 — we have no army to
+        # back them up and sacrificing drones to spines against an early rush
+        # just speeds up our own death.  Fortress mode bypasses this: if the
+        # strategy machine decided to turtle it already did the phase check.
+        if is_emergency and not is_fortress and heuristics.game_phase < 0.30:
+            log.debug(
+                "ZergStaticDefenseTactic: emergency threat=%.2f but game_phase=%.2f < 0.30 — skipping",
+                heuristics.threat_level,
+                heuristics.game_phase,
+                frame=bot.state.game_loop,
+            )
+            return None
+
+        # ── Per-class cooldown ───────────────────────────────────────────────
+        # Prevent queuing a new crawler within _CRAWLER_COOLDOWN_FRAMES of the
+        # last successful enqueue.  Without this, the tactic fires for each
+        # hatchery every 20 frames, rapidly queuing spine → spore → spine.
+        frame = bot.state.game_loop
+        frames_since_last = frame - ZergStaticDefenseTactic._last_enqueued_frame
+        if (
+            ZergStaticDefenseTactic._last_enqueued_frame >= 0
+            and frames_since_last < ZergStaticDefenseTactic._CRAWLER_COOLDOWN_FRAMES
+        ):
+            log.debug(
+                "ZergStaticDefenseTactic: cooldown active (%d/%d frames)",
+                frames_since_last,
+                ZergStaticDefenseTactic._CRAWLER_COOLDOWN_FRAMES,
+                frame=frame,
+            )
             return None
 
         confidence = 0.88 if is_fortress else 0.80
@@ -2755,6 +2794,7 @@ class ZergStaticDefenseTactic(BuildingTacticModule):
         )
         accepted = bot.construction_queue.enqueue(order)
         if accepted:
+            ZergStaticDefenseTactic._last_enqueued_frame = bot.state.game_loop
             log.game_event(
                 "STATIC_DEFENCE",
                 f"{idea.train_type.name} near hatch@{building.position}",

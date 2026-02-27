@@ -1,3 +1,12 @@
+from __future__ import annotations
+from typing import TYPE_CHECKING, Optional, Set
+from cython_extensions import cy_distance_to_squared
+from sc2.ids.unit_typeid import UnitTypeId as UnitID
+from sc2.unit import Unit
+from ManifestorBot.abilities.ability import Ability, AbilityContext
+if TYPE_CHECKING:
+    from ManifestorBot.manifestor_bot import ManifestorBot
+    
 class BanelingTargetAbility(Ability):
     """
     Issues attack commands for banelings targeting high-splash / low-HP groups.
@@ -7,6 +16,9 @@ class BanelingTargetAbility(Ability):
       2. Clumped bio / light units (high splash value — score by nearby enemies)
       3. Lowest HP enemy ground unit (finish off stragglers for chain detonation)
     """
+    
+
+
     UNIT_TYPES: Set[UnitID] = {UnitID.BANELING}
     GOAL: str = "attack"
     priority: int = 70  # higher than generic attack abilities

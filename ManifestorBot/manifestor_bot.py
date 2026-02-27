@@ -57,7 +57,8 @@ from ManifestorBot.abilities.worker_abilities import (
     register_worker_abilities,
     MiningTactic,
 )
-from ManifestorBot.abilities.morph_baneling import MorphBanelingTactic
+from ManifestorBot.manifests.tactics.unit_morph import BanelingMorphTactic
+from ManifestorBot.abilities.baneling_target import BanelingTargetAbility
 from ManifestorBot.manifests.scout_ledger import ScoutLedger
 from ManifestorBot.manifests.zergling_scout import ZerglingScouter
 from ManifestorBot.construction import (
@@ -256,6 +257,11 @@ class ManifestorBot(AresBot):
         self.scout_ledger.update(iteration)
         self.pheromone_map.update(iteration)
         self.zergling_scouter.update(iteration)
+
+        if self.state.game_loop > 2000 and self.heuristic_manager.get_state().game_phase < 0:
+            log.game_event("SURRENDER", "Game phase negative — surrendering", frame=self.state.game_loop)
+            await self._client.leave()
+            return
 
         # Log a brief scouter summary every ~30 seconds (672 frames)
         if iteration % 672 == 0:
