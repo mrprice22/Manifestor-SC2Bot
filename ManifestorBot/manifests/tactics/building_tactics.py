@@ -834,6 +834,84 @@ _UPGRADE_PRIORITY: List[tuple[UpgradeId, UnitID]] = [
     (UpgradeId.ZERGGROUNDARMORSLEVEL3,  UnitID.EVOLUTIONCHAMBER),
 ]
 
+# Minimum number of alive benefiting units required before we research an upgrade.
+# An upgrade not listed here has no threshold (always research when affordable).
+#
+# The beneficiaries list is ALL unit types that benefit — e.g. melee weapons L1
+# helps zerglings, banelings, and ultralisks equally.  We count any of them.
+#
+# Tune the thresholds here; you don't need to touch any other code.
+_UPGRADE_UNIT_THRESHOLD: dict[UpgradeId, tuple[int, tuple[UnitID, ...]]] = {
+    # (min_units, (unit_types_that_benefit, ...))
+
+    # Metabolic Boost: only worth it once you have real ling presence
+    UpgradeId.ZERGLINGMOVEMENTSPEED: (
+        6,
+        (UnitID.ZERGLING, UnitID.ZERGLINGBURROWED),
+    ),
+
+    # Centrifugal Hooks: banelings are the entire beneficiary pool
+    UpgradeId.CENTRIFICALHOOKS: (
+        4,
+        (UnitID.BANELING, UnitID.BANELINGBURROWED, UnitID.BANELINGCOCOON),
+    ),
+
+    # Glial Reconstitution: roach movement — need a real roach contingent
+    UpgradeId.GLIALRECONSTITUTION: (
+        4,
+        (UnitID.ROACH, UnitID.ROACHBURROWED),
+    ),
+
+    # Melee weapons: zerglings + banelings + ultralisks all benefit
+    UpgradeId.ZERGMELEEWEAPONSLEVEL1: (
+        4,
+        (UnitID.ZERGLING, UnitID.ZERGLINGBURROWED,
+         UnitID.BANELING, UnitID.BANELINGBURROWED,
+         UnitID.ULTRALISK, UnitID.ULTRALISKBURROWED),
+    ),
+    UpgradeId.ZERGMELEEWEAPONSLEVEL2: (
+        6,
+        (UnitID.ZERGLING, UnitID.ZERGLINGBURROWED,
+         UnitID.BANELING, UnitID.BANELINGBURROWED,
+         UnitID.ULTRALISK, UnitID.ULTRALISKBURROWED),
+    ),
+    UpgradeId.ZERGMELEEWEAPONSLEVEL3: (
+        8,
+        (UnitID.ZERGLING, UnitID.ZERGLINGBURROWED,
+         UnitID.BANELING, UnitID.BANELINGBURROWED,
+         UnitID.ULTRALISK, UnitID.ULTRALISKBURROWED),
+    ),
+
+    # Ground armour: universal (all ground units) — low threshold, just needs a army
+    UpgradeId.ZERGGROUNDARMORSLEVEL1: (
+        6,
+        (UnitID.ZERGLING, UnitID.ZERGLINGBURROWED,
+         UnitID.BANELING, UnitID.BANELINGBURROWED,
+         UnitID.ROACH, UnitID.ROACHBURROWED,
+         UnitID.HYDRALISK, UnitID.HYDRALISKBURROWED,
+         UnitID.LURKERMP, UnitID.LURKERMPBURROWED,
+         UnitID.ULTRALISK, UnitID.ULTRALISKBURROWED),
+    ),
+    UpgradeId.ZERGGROUNDARMORSLEVEL2: (
+        8,
+        (UnitID.ZERGLING, UnitID.ZERGLINGBURROWED,
+         UnitID.BANELING, UnitID.BANELINGBURROWED,
+         UnitID.ROACH, UnitID.ROACHBURROWED,
+         UnitID.HYDRALISK, UnitID.HYDRALISKBURROWED,
+         UnitID.LURKERMP, UnitID.LURKERMPBURROWED,
+         UnitID.ULTRALISK, UnitID.ULTRALISKBURROWED),
+    ),
+    UpgradeId.ZERGGROUNDARMORSLEVEL3: (
+        10,
+        (UnitID.ZERGLING, UnitID.ZERGLINGBURROWED,
+         UnitID.BANELING, UnitID.BANELINGBURROWED,
+         UnitID.ROACH, UnitID.ROACHBURROWED,
+         UnitID.HYDRALISK, UnitID.HYDRALISKBURROWED,
+         UnitID.LURKERMP, UnitID.LURKERMPBURROWED,
+         UnitID.ULTRALISK, UnitID.ULTRALISKBURROWED),
+    ),
+}
+
 
 class ZergUpgradeResearchTactic(BuildingTacticModule):
     """
@@ -913,10 +991,11 @@ class ZergUpgradeResearchTactic(BuildingTacticModule):
         )
 
     def _pick_upgrade(self, building: "Unit", bot: "ManifestorBot", counter_ctx: "CounterContext") -> Optional[UpgradeId]:
-        # Counter-prescribed upgrades get priority
+        # Counter-prescribed upgrades get priority; they bypass the unit-count
+        # threshold so the counter system can force urgent tech (e.g. Grooved
+        # Spines against heavy bio) even before we have many benefiting units.
         if counter_ctx and counter_ctx.priority_upgrades:
             for upgrade in counter_ctx.priority_upgrades:
-                # Check if this building can research this upgrade
                 match = any(
                     u == upgrade and s == building.type_id
                     for u, s in _UPGRADE_PRIORITY
@@ -952,8 +1031,33 @@ class ZergUpgradeResearchTactic(BuildingTacticModule):
                     frame=bot.state.game_loop,
                 )
                 continue
+            # Unit-count threshold: skip this upgrade if we don't yet have enough
+            # alive benefiting units to justify the investment.
+            if not self._meets_unit_threshold(upgrade, bot):
+                log.debug(
+                    "ZergUpgradeResearchTactic: deferring %s — not enough benefiting units yet",
+                    upgrade.name,
+                    frame=bot.state.game_loop,
+                )
+                continue
             return upgrade
         return None
+
+    @staticmethod
+    def _meets_unit_threshold(upgrade: UpgradeId, bot: "ManifestorBot") -> bool:
+        """
+        Return True if we have at least the threshold number of alive units
+        that benefit from this upgrade.
+
+        Upgrades not listed in _UPGRADE_UNIT_THRESHOLD always pass (no gate).
+        """
+        entry = _UPGRADE_UNIT_THRESHOLD.get(upgrade)
+        if entry is None:
+            return True  # no threshold defined — always allow
+
+        min_units, beneficiary_types = entry
+        count = sum(bot.units(t).amount for t in beneficiary_types)
+        return count >= min_units
 
     def execute(self, building: "Unit", idea: BuildingIdea, bot: "ManifestorBot") -> bool:
         result = self._execute_research(building, idea, bot)
