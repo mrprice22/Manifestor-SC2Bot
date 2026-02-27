@@ -27,7 +27,7 @@ OPPONENT_DIFFICULTY = "VeryHard"  # VeryEasy, Easy, Medium, Hard, VeryHard, etc.
 
 # ===== GAME MODE =====
 # Set to True to play in realtime (like a human), False for faster simulation
-REALTIME = False
+REALTIME = True
 
 # ===== STRATEGY MACHINE =====
 # Set to None to let the state machine run normally (recommended for live games).
@@ -44,7 +44,7 @@ REALTIME = False
 #   "WAR_OF_ATTRITION"     — hold-and-grind defensive
 #   "BLEED_OUT"            — guerrilla/harassment pivot
 #   "DRONE_ONLY_FORTRESS"  — emergency turtle
-FORCE_STRATEGY = "STOCK_STANDARD"
+FORCE_STRATEGY = "ALL_IN" #"STOCK_STANDARD"
 
 # ===== POST-GAME LOG ANALYSIS =====
 # When True, sc2_log_analyzer.py runs automatically after every game.
