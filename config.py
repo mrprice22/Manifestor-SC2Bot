@@ -44,7 +44,7 @@ REALTIME = True
 #   "WAR_OF_ATTRITION"     — hold-and-grind defensive
 #   "BLEED_OUT"            — guerrilla/harassment pivot
 #   "DRONE_ONLY_FORTRESS"  — emergency turtle
-FORCE_STRATEGY = None #"STOCK_STANDARD"
+FORCE_STRATEGY = "STOCK_STANDARD"
 
 # ===== POST-GAME LOG ANALYSIS =====
 # When True, sc2_log_analyzer.py runs automatically after every game.

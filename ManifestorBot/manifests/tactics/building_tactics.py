@@ -40,19 +40,26 @@ if TYPE_CHECKING:
 
 # Supply cost for each trainable unit type.
 # Zerg units cost 1 supply except where noted.
-SUPPLY_COST: dict[UnitID, int] = {
+SUPPLY_COST: dict[UnitID, float] = {
     UnitID.QUEEN:        2,
-    UnitID.ZERGLING:     1,  # but spawns 2 per egg — handled naturally by amount
-    UnitID.BANELING:     0,  # morphed from zergling, uses zergling supply
+    UnitID.ZERGLING:     0.5,  # 0.5 supply each; spawn 2 per egg for 1 supply total
+    UnitID.ZERGLINGBURROWED: 0.5,
+    UnitID.BANELING:     0,    # morphed from zergling, uses zergling's supply slot
+    UnitID.BANELINGBURROWED: 0,
     UnitID.ROACH:        2,
+    UnitID.ROACHBURROWED: 2,
     UnitID.RAVAGER:      3,
     UnitID.HYDRALISK:    2,
+    UnitID.HYDRALISKBURROWED: 2,
     UnitID.LURKERMP:     3,
+    UnitID.LURKERMPBURROWED: 3,
     UnitID.MUTALISK:     2,
     UnitID.CORRUPTOR:    2,
     UnitID.BROODLORD:    4,
     UnitID.ULTRALISK:    6,
+    UnitID.ULTRALISKBURROWED: 6,
     UnitID.INFESTOR:     2,
+    UnitID.INFESTORBURROWED: 2,
     UnitID.VIPER:        3,
     UnitID.SWARMHOSTMP:  3,
 }
@@ -109,7 +116,77 @@ _ARMY_GATED_STRUCTURES: frozenset = frozenset({
 })
 # Minimum combat supply (excludes workers, queens, overlords) required
 # before queueing any army-gated structure.
-_MIN_ARMY_SUPPLY_FOR_TECH: int = 10
+_MIN_ARMY_SUPPLY_FOR_TECH: int = 16
+
+# Per-structure utilization gate: before building a structure, require that
+# we already have a minimum amount of *supply* worth of units that justify
+# that structure.  Uses SUPPLY_COST for accuracy (zerglings = 0.5 supply each).
+# Prevents the bot from stacking tech buildings before training anything from them.
+#
+# Format: { structure_to_gate: (min_supply, (unit_types_that_must_exist,)) }
+#
+# Every structure in _ARMY_GATED_STRUCTURES should appear here.
+# Counter-prescribed structures bypass this gate (see generate_idea).
+_STRUCTURE_UTILIZATION_GATE: dict[UnitID, tuple[float, tuple]] = {
+    # Gate roach warren behind zergling presence.
+    # 4 supply = 8 zerglings — a real ling contingent, not just a pair.
+    UnitID.ROACHWARREN: (
+        6,
+        (UnitID.ZERGLING, UnitID.ZERGLINGBURROWED),
+    ),
+    # Gate evo chamber behind a real ground army.
+    # 8 supply = ~4 roaches or 16 zerglings.
+    UnitID.EVOLUTIONCHAMBER: (
+        10,
+        (UnitID.ZERGLING, UnitID.ZERGLINGBURROWED,
+         UnitID.ROACH, UnitID.ROACHBURROWED,
+         UnitID.HYDRALISK, UnitID.HYDRALISKBURROWED),
+    ),
+    # Gate baneling nest behind roach presence.
+    # Banelings morph from zerglings — need lings to actually use the nest.
+    UnitID.BANELINGNEST: (
+        8,
+        (UnitID.ROACH, UnitID.ROACHBURROWED),
+    ),
+    # Gate hydralisk den behind roach production.
+    # 6 supply = 3 roaches minimum.
+    UnitID.HYDRALISKDEN: (
+        6,
+        (UnitID.ROACH, UnitID.ROACHBURROWED, UnitID.RAVAGER),
+    ),
+    # Gate spire behind a real ground army.
+    # 8 supply = mixed ground before going air.
+    UnitID.SPIRE: (
+        8,
+        (UnitID.ZERGLING, UnitID.ZERGLINGBURROWED,
+         UnitID.ROACH, UnitID.ROACHBURROWED,
+         UnitID.HYDRALISK, UnitID.HYDRALISKBURROWED),
+    ),
+    # Gate infestation pit behind mid-game army.
+    UnitID.INFESTATIONPIT: (
+        12,
+        (UnitID.ROACH, UnitID.ROACHBURROWED,
+         UnitID.HYDRALISK, UnitID.HYDRALISKBURROWED,
+         UnitID.LURKERMP, UnitID.LURKERMPBURROWED),
+    ),
+    # Ultralisk cavern is hive-tier; require a substantial army.
+    UnitID.ULTRALISKCAVERN: (
+        20,
+        (UnitID.ROACH, UnitID.ROACHBURROWED,
+         UnitID.HYDRALISK, UnitID.HYDRALISKBURROWED,
+         UnitID.LURKERMP, UnitID.LURKERMPBURROWED,
+         UnitID.INFESTOR, UnitID.INFESTORBURROWED),
+    ),
+}
+
+
+def _utilization_supply(unit_types: tuple, bot) -> float:
+    """Sum SUPPLY_COST for all alive units of the given types."""
+    return sum(
+        SUPPLY_COST.get(u.type_id, 1)
+        for t in unit_types
+        for u in bot.units(t)
+    )
 
 
 def _building_at_capacity(structure_type: UnitID, existing_ready, bot) -> bool:
@@ -1455,8 +1532,17 @@ class ZergStructureBuildTactic(BuildingTacticModule):
                     continue
 
             # ── Hard cap on structure count ────────────────────────────
+            # Count ready + under-construction + queue-pending.
+            # Under-construction (build_progress < 1.0) must be included:
+            # there is a window between the ConstructionQueue pruning an order
+            # (DONE state) and the structure appearing as ready where both
+            # existing_count and pending_count can be 0, allowing a duplicate.
             max_allowed = _max_for_structure(structure_type, bot)
-            existing_count = bot.structures(structure_type).amount
+            existing_ready = bot.structures(structure_type).ready
+            existing_building = bot.structures(structure_type).filter(
+                lambda s: s.build_progress < 1.0
+            )
+            existing_count = existing_ready.amount + existing_building.amount
             pending_count = bot.construction_queue.count_active_of_type(structure_type)
             total = existing_count + pending_count
 
@@ -1482,11 +1568,29 @@ class ZergStructureBuildTactic(BuildingTacticModule):
                 )
                 continue
 
+            # ── Per-structure utilization gate ─────────────────────────
+            # Before building a structure, confirm we have enough supply
+            # worth of the relevant units already alive.  Uses SUPPLY_COST
+            # so zergling supply (0.5 each) is counted correctly.
+            util_entry = _STRUCTURE_UTILIZATION_GATE.get(structure_type)
+            if util_entry is not None:
+                min_supply, beneficiary_types = util_entry
+                current_supply = _utilization_supply(beneficiary_types, bot)
+                if current_supply < min_supply:
+                    log.debug(
+                        "ZergStructureBuildTactic: %s deferred — need %.1f supply of %s, have %.1f",
+                        structure_type.name,
+                        min_supply,
+                        "/".join(t.name for t in beneficiary_types[:2]),
+                        current_supply,
+                        frame=bot.state.game_loop,
+                    )
+                    continue
+
             # ── Utilization gate: only add more if existing are at capacity ──
             # Prevents duplicate research buildings (e.g. 2nd evo chamber) from
             # being built while the first one still has idle research slots.
-            if existing_count >= 1:
-                existing_ready = bot.structures(structure_type).ready
+            if existing_ready.amount >= 1:
                 if not _building_at_capacity(structure_type, existing_ready, bot):
                     log.debug(
                         "ZergStructureBuildTactic: %s — existing not at capacity, deferring",
@@ -1812,8 +1916,10 @@ class ZergStructureBuildTactic(BuildingTacticModule):
 _MAX_QUEENS_PER_HATCHERY: float = 1.0
 
 # Minimum queens we always want regardless of hatchery count.
-# Two queens: one for injects, one for defense/creep.
-_MIN_QUEENS: int = 2
+# ONE inject queen is the hard minimum — a second can wait until we have
+# some army established.  The old value of 2 caused the bot to spend 300
+# minerals on queens before the first zergling at 1:30.
+_MIN_QUEENS: int = 1
 
 # ─── FIX: Confidence must be set above the worker drone ceiling ──────────────
 #
@@ -1824,11 +1930,16 @@ _MIN_QUEENS: int = 2
 # the Hatchery appears idle even while a drone trains from larva (.orders
 # stays empty — the command lands on the larva unit, not the Hatchery).
 #
-# Set base to 0.97 so queens always win when the quota is unmet, regardless
-# of economic stress. Queens are infrastructure (inject, AA, transfuse) — they
-# must never be indefinitely deferred for drones.
+# Base is 0.97 so queens always win when GENUINELY needed (quota unmet and
+# we have fewer than _MIN_QUEENS).  Once we have >=1 queen and are training
+# the second, confidence drops to 0.80 so army production (emergency floor
+# 0.85) can win and get some zerglings out before the second queen finishes.
 # ─────────────────────────────────────────────────────────────────────────────
 _QUEEN_BASE_CONFIDENCE: float = 0.97
+# Confidence used when we already have >= _MIN_QUEENS and are working toward
+# the full per-hatchery quota.  Lower than emergency army floor (0.85) so
+# zerglings get trained alongside the second+ queens in early game.
+_QUEEN_SECONDARY_CONFIDENCE: float = 0.78
 
 
 class ZergQueenProductionTactic(BuildingTacticModule):
@@ -1955,21 +2066,31 @@ class ZergQueenProductionTactic(BuildingTacticModule):
             return None  # quota met — don't train more
 
         deficit = quota - effective_queens
-        # High base confidence so queens ALWAYS beat the drone tactic.
-        # See _QUEEN_BASE_CONFIDENCE comment above for the full explanation.
-        confidence = min(1.0, _QUEEN_BASE_CONFIDENCE + deficit * 0.03)
+        # Full confidence only when below the hard minimum — first queen is
+        # critical infrastructure and must always be trained immediately.
+        # Once we have >= _MIN_QUEENS queens, drop to secondary confidence so
+        # army production (emergency floor 0.85) can also get larva and we
+        # don't spend 300 minerals on a second queen before the first zergling.
+        if effective_queens < _MIN_QUEENS:
+            confidence = min(1.0, _QUEEN_BASE_CONFIDENCE + deficit * 0.03)
+            conf_source = "primary"
+        else:
+            confidence = _QUEEN_SECONDARY_CONFIDENCE
+            conf_source = "secondary"
         evidence = {
             "queen_deficit": deficit,
             "queen_count": queen_count,
             "pending_queens": pending_queens,
             "quota": quota,
-            "base_confidence": _QUEEN_BASE_CONFIDENCE,
+            "base_confidence": confidence,
+            "conf_source": conf_source,
         }
 
         log.debug(
-            "ZergQueenProductionTactic: generating TRAIN_QUEEN idea (conf=%.3f deficit=%.1f)",
+            "ZergQueenProductionTactic: generating TRAIN_QUEEN idea (conf=%.3f deficit=%.1f source=%s)",
             confidence,
             deficit,
+            conf_source,
             frame=bot.state.game_loop,
         )
 

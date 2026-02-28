@@ -201,34 +201,34 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
     # ultra-viper-infestor hive army to close. Solid and predictable execution.
     # ─────────────────────────────────────────────────────────────────────────────
     Strategy.STOCK_STANDARD: TacticalProfile(
-        engage_bias   = 0.15,
+        engage_bias   = 0.2,
         retreat_bias  = 0.0,
-        harass_bias   = 0.10,
-        bank_bias     = +0.09,  # mild saving — keep minerals available for expansions
-        cohesion_bias = 0.09,
+        harass_bias   = 0.0,
+        bank_bias     = +0.0,  # mild saving — keep minerals available for expansions
+        cohesion_bias = 0.2,
         hold_bias     = 0.00,
         sacrifice_ok  = False,
-        drone_bias    = +0.05,  # drone priority: hit supply quickly
-        expand_bias   = +0.4,  # expand earlier (threshold ~70% vs default 75%)
-        gas_ratio_bias= -0.10,  # early comp is ling/queen (0 gas); don't over-collect
-        scout_bias    = 0.0,  # don't send overlords deep — too many die to early queens
+        drone_bias    = +0.25,  # drone priority: hit supply quickly
+        expand_bias   = +0.3,  # expand earlier (threshold ~70% vs default 75%)
+        gas_ratio_bias= -0.15,  # early comp is ling/queen (0 gas); don't over-collect
+        scout_bias    = -0.15,  # don't send overlords deep — too many die to early queens
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
-                    UnitID.QUEEN:    0.35,
-                    UnitID.ZERGLING: 0.50,
-                    UnitID.BANELING: 0.15,   # early bio answer
+                    UnitID.ZERGLING: 0.60,
+                    UnitID.BANELING: 0.20,   # early bio answer
+                    UnitID.ROACH:   0.20,
                 },
                 army_supply_target=20,
                 max_hatcheries=2,
             )),
             (0.3, CompositionTarget(
                 ratios={
-                    UnitID.QUEEN:    0.10,
                     UnitID.ZERGLING: 0.20,
-                    UnitID.BANELING: 0.15,
+                    UnitID.BANELING: 0.1,
                     UnitID.ROACH:    0.40,
                     UnitID.RAVAGER:  0.15,   # corrosive bile on bio clumps/walls
+                    UnitID.HYDRALISK: 0.15,  # anti-air + harassment response
                 },
                 army_supply_target=80,
                 max_hatcheries=4,
@@ -238,6 +238,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
                     UnitID.ROACH:     0.25,
                     UnitID.HYDRALISK: 0.15,  # anti-air + harassment response
                     UnitID.LURKERMP:  0.40,  # lurker core
+                    UnitID.BANELING: 0.1,
                     UnitID.ZERGLING:  0.20,  # surround assist
                 },
                 army_supply_target=120,
@@ -250,6 +251,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
                     UnitID.VIPER:     0.15,  # parasitic bond, blinding cloud
                     UnitID.INFESTOR:  0.15,  # fungal + neural parasite
                     UnitID.ZERGLING:  0.15,  # surround fill
+                    UnitID.BANELING:  0.05,
                 },
                 army_supply_target=140,
                 max_hatcheries=6,
@@ -280,8 +282,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
-                    UnitID.QUEEN:    0.15,
-                    UnitID.ZERGLING: 0.85,   # mass lings, go now
+                    UnitID.ZERGLING: 1.0,   # mass lings, go now
                 },
                 army_supply_target=24,
                 max_hatcheries=2,
@@ -342,8 +343,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
-                    UnitID.QUEEN:    0.10,
-                    UnitID.ZERGLING: 0.90,   # pure ling flood
+                    UnitID.ZERGLING: 1.0, 
                 },
                 army_supply_target=30,
                 max_hatcheries=2,
@@ -395,8 +395,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
-                    UnitID.QUEEN:    0.30,
-                    UnitID.ZERGLING: 0.70,
+                    UnitID.ZERGLING: 1.0,
                 },
                 army_supply_target=20,
                 max_hatcheries=2,
@@ -459,8 +458,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
-                    UnitID.QUEEN:    0.25,
-                    UnitID.ZERGLING: 0.75,
+                    UnitID.ZERGLING: 1.0,
                 },
                 army_supply_target=22,
                 max_hatcheries=2,
@@ -524,8 +522,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
-                    UnitID.QUEEN:    0.50,   # queens hold early with strong AA
-                    UnitID.ZERGLING: 0.50,
+                    UnitID.ZERGLING: 1.0,
                 },
                 army_supply_target=18,
                 max_hatcheries=2,
@@ -534,7 +531,6 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
                 ratios={
                     UnitID.ROACH:    0.45,
                     UnitID.RAVAGER:  0.15,   # bile punishes enemy pushes
-                    UnitID.QUEEN:    0.20,
                     UnitID.ZERGLING: 0.20,
                 },
                 army_supply_target=55,
@@ -589,8 +585,7 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
-                    UnitID.QUEEN:    0.40,
-                    UnitID.ZERGLING: 0.60,
+                    UnitID.ZERGLING: 1.0,
                 },
                 army_supply_target=18,
                 max_hatcheries=2,
@@ -655,15 +650,13 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
         composition_curve = [
             (0.00, CompositionTarget(
                 ratios={
-                    UnitID.QUEEN:    0.70,   # queens are the entire defence
-                    UnitID.ZERGLING: 0.30,
+                    UnitID.ZERGLING: 1.0,
                 },
                 army_supply_target=14,
                 max_hatcheries=3,   # expand aggressively — that's the whole point
             )),
             (0.30, CompositionTarget(
                 ratios={
-                    UnitID.QUEEN:     0.25,
                     UnitID.ROACH:     0.40,
                     UnitID.HYDRALISK: 0.15,  # anti-air; answers early air harassment
                     UnitID.ZERGLING:  0.20,
@@ -677,7 +670,6 @@ _PROFILES: dict[Strategy, TacticalProfile] = {
                     UnitID.INFESTOR:   0.20,  # fungal locks pushes; neural key units
                     UnitID.SWARMHOSTMP:0.15,  # free locust damage without risking army
                     UnitID.ROACH:      0.15,
-                    UnitID.QUEEN:      0.05,
                 },
                 army_supply_target=80,
                 max_hatcheries=6,
